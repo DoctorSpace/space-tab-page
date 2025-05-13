@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_name__",
+  "version": "1.1",
+  "default_locale": "en",
+  "description": "__MSG_description__",
+  "icons": {
+    "128": "./img/icons/extension/128x128.png",
+    "16": "./img/icons/extension/16x16.png",
+    "32": "./img/icons/extension/32x32.png",
+    "48": "./img/icons/extension/48x48.png"
+  },
+  "permissions": ["activeTab"],
+  "action": {
+    "default_title": "__MSG_name__"
+  },
+  "chrome_url_overrides": {
+    "newtab": "pages/board.html"
+  },
+  "update_url": "https://clients2.google.com/service/update2/crx"
+}

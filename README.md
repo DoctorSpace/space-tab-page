@@ -1,0 +1,1 @@
+# Extension for new page in browser

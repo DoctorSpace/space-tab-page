@@ -1,0 +1,38 @@
+* {
+  margin: 0;
+}
+
+body {
+  color: rgb(23, 23, 24);
+  float: left;
+  background-color: #171717;
+
+  background: url("/img/pictures/background.png");
+  background-size: cover; /* Растягивает изображение на всю область */
+  background-position: center; /* Центрирует изображение */
+  background-repeat: no-repeat; /* Запрещает повторение */
+  width: 100vw;
+  height: 100vh;
+}
+
+.container {
+  display: grid;
+  gap: 20px;
+  padding: 100px;
+}
+
+h1 {
+  color: rgb(84, 172, 250);
+  font-size: 15px;
+  margin-bottom: 14px;
+}
+
+p {
+  font-size: 12px;
+}
+
+a {
+  color: rgb(117, 117, 117);
+  text-decoration: none;
+  float: right;
+}
