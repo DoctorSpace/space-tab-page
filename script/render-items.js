@@ -24,6 +24,7 @@ let driveAutoSyncTimer = null;
 let headerRef = null;
 let linksNavRef = null;
 let requestStatusRef = null;
+let blackoutActive = false;
 const dragState = {
   active: false,
   sourceCategoryIndex: null,
@@ -552,11 +553,14 @@ function createHeader() {
           </svg>
         </button>
         <div class="speed-test__results">
+          <span class="speed-test__country" title="Страна подключения">--</span>
+          <span class="speed-test__divider">/</span>
           <span class="speed-test__ping">-- <small>ms</small></span>
           <span class="speed-test__divider">/</span>
           <span class="speed-test__download">-- <small>Mb/s</small></span>
         </div>
       </div>
+      <button class="header__blackout-btn" id="blackout-toggle-btn" type="button" title="Чёрный экран на весь монитор" aria-label="Чёрный экран"></button>
       <button class="header__menu-toggle" id="drive-menu-toggle" title="Открыть меню синхронизации" aria-label="Открыть меню">
         <span></span><span></span><span></span>
       </button>
@@ -574,6 +578,10 @@ function createHeader() {
 
   const speedBtn = header.querySelector(".speed-test__btn");
   speedBtn.addEventListener("click", () => handleSpeedTest(header));
+
+  header.querySelector("#blackout-toggle-btn")?.addEventListener("click", () => {
+    enableBlackout();
+  });
 
   const menu = header.querySelector("#drive-menu");
   const menuToggle = header.querySelector("#drive-menu-toggle");
@@ -621,19 +629,84 @@ function createHeader() {
   return header;
 }
 
+function getBlackoutOverlay() {
+  return document.getElementById("blackout-screen");
+}
+
+function disableBlackout() {
+  const overlay = getBlackoutOverlay();
+  if (!overlay) return;
+  overlay.classList.remove("blackout-screen--active");
+  blackoutActive = false;
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+
+function enableBlackout() {
+  const overlay = getBlackoutOverlay();
+  if (!overlay || blackoutActive) return;
+
+  blackoutActive = true;
+  overlay.classList.add("blackout-screen--active");
+
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen?.().catch(() => {});
+  }
+}
+
+function initBlackoutOverlay() {
+  const existing = getBlackoutOverlay();
+  if (existing) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "blackout-screen";
+  overlay.className = "blackout-screen";
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    disableBlackout();
+  });
+
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && blackoutActive) {
+      disableBlackout();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && blackoutActive) {
+      disableBlackout();
+    }
+  });
+}
+
 function handleSpeedTest(header) {
   if (speedTestRunning) return;
   speedTestRunning = true;
 
   const btn = header.querySelector(".speed-test__btn");
+  const countryEl = header.querySelector(".speed-test__country");
   const pingEl = header.querySelector(".speed-test__ping");
   const downloadEl = header.querySelector(".speed-test__download");
 
   btn.classList.add("speed-test__btn--running");
+  countryEl.textContent = "--";
+  countryEl.title = "Страна подключения";
   pingEl.innerHTML = '<span class="speed-test__spinner"></span>';
   downloadEl.innerHTML = '<span class="speed-test__spinner"></span>';
 
   runSpeedTest((progress) => {
+    if (progress.stage === "country") {
+      if (progress.status === "done") {
+        countryEl.textContent = progress.countryCode || "--";
+        countryEl.title = progress.countryCode ? `Страна подключения: ${progress.countryCode}` : "Страна подключения";
+      } else if (progress.status === "error") {
+        countryEl.textContent = "--";
+        countryEl.title = "Страна подключения";
+      }
+    }
     if (progress.stage === "ping") {
       if (progress.status === "done") {
         pingEl.innerHTML = `${progress.ping} <small>ms</small>`;
@@ -1146,6 +1219,7 @@ function init() {
   const header = createHeader();
   document.body.insertBefore(header, document.body.firstChild);
   headerRef = header;
+  initBlackoutOverlay();
 
   const requestStatus = createRequestStatusBar();
   header.insertAdjacentElement("afterend", requestStatus);
