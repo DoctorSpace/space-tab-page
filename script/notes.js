@@ -3,6 +3,7 @@ const NOTES_KEY = "notes_data";
 const modalState = {
   selectedId: null,
   isCreating: false,
+  draftTitle: "",
   draftText: ""
 };
 
@@ -67,6 +68,13 @@ function getSnippet(text) {
   return `${clean.slice(0, 64)}...`;
 }
 
+function getDisplayTitle(note) {
+  const title = String(note?.title || "").trim();
+  if (title) return title;
+  const snippet = getSnippet(String(note?.text || ""));
+  return snippet || "Без названия";
+}
+
 function renderNotesButton() {
   const container = document.getElementById("notes");
   if (!container) return;
@@ -103,6 +111,7 @@ function renderMiniList(notes) {
       return `
         <article class="notes-mini__item ${selectedClass}" data-id="${note.id}">
           <button class="notes-mini__select" data-action="select" data-id="${note.id}" title="Открыть полностью">
+            <div class="notes-mini__title">${escapeHtml(getDisplayTitle(note))}</div>
             <div class="notes-mini__text">${escapeHtml(getSnippet(note.text))}</div>
             <div class="notes-mini__meta">
               <span>${formatDate(note.createdAt)}</span>
@@ -130,7 +139,7 @@ function renderEditor(notes) {
   }
 
   const current = modalState.isCreating
-    ? { createdAt: Date.now(), done: false, text: modalState.draftText }
+    ? { createdAt: Date.now(), done: false, title: modalState.draftTitle, text: modalState.draftText }
     : notes.find((note) => note.id === modalState.selectedId);
 
   if (!current) {
@@ -149,7 +158,12 @@ function renderEditor(notes) {
     <div class="notes-editor">
       <div class="notes-editor__head">
         <div>
-          <h3>${modalState.isCreating ? "Новая заметка" : "Полный текст"}</h3>
+          <input
+            id="notes-editor-title"
+            class="notes-editor__title-input"
+            placeholder="Заголовок заметки"
+            value="${escapeHtml(modalState.draftTitle)}"
+          />
           <p>${formatDate(current.createdAt)}</p>
         </div>
         ${!modalState.isCreating ? `<span class="notes-editor__chip ${doneClass}">${current.done ? "Выполнено" : "В работе"}</span>` : ""}
@@ -172,6 +186,7 @@ function renderEditor(notes) {
 function syncDraftFromSelection(notes) {
   if (modalState.isCreating) return;
   const current = notes.find((note) => note.id === modalState.selectedId);
+  modalState.draftTitle = current ? String(current.title || "") : "";
   modalState.draftText = current ? current.text : "";
 }
 
@@ -195,14 +210,16 @@ function rerenderModal(modal) {
 }
 
 function addOrUpdateNote() {
+  const title = modalState.draftTitle.trim();
   const text = modalState.draftText.trim();
-  if (!text) return;
+  if (!title && !text) return;
 
   const notes = getNotes();
 
   if (modalState.isCreating) {
     const newNote = {
       id: generateId(),
+      title,
       text,
       done: false,
       createdAt: Date.now()
@@ -216,6 +233,7 @@ function addOrUpdateNote() {
 
   const note = notes.find((item) => item.id === modalState.selectedId);
   if (!note) return;
+  note.title = title;
   note.text = text;
   saveNotes(notes);
 }
@@ -242,6 +260,7 @@ function openNotesModal() {
 
   modalState.isCreating = false;
   modalState.selectedId = getSortedNotes()[0]?.id || null;
+  modalState.draftTitle = "";
   modalState.draftText = "";
 
   const modal = document.createElement("div");
@@ -296,6 +315,7 @@ function openNotesModal() {
     if (action === "new") {
       modalState.isCreating = true;
       modalState.selectedId = null;
+      modalState.draftTitle = "";
       modalState.draftText = "";
       rerenderModal(modal);
       return;
@@ -305,6 +325,7 @@ function openNotesModal() {
       modalState.isCreating = false;
       modalState.selectedId = id;
       const selected = getNotes().find((note) => note.id === id);
+      modalState.draftTitle = selected ? String(selected.title || "") : "";
       modalState.draftText = selected ? selected.text : "";
       rerenderModal(modal);
       return;
@@ -329,6 +350,7 @@ function openNotesModal() {
         modalState.isCreating = true;
         modalState.selectedId = null;
       }
+      modalState.draftTitle = "";
       modalState.draftText = "";
       rerenderModal(modal);
       return;
@@ -341,6 +363,12 @@ function openNotesModal() {
   });
 
   modal.addEventListener("input", (event) => {
+    const titleInput = event.target.closest("#notes-editor-title");
+    if (titleInput) {
+      modalState.draftTitle = titleInput.value;
+      return;
+    }
+
     const input = event.target.closest("#notes-editor-input");
     if (!input) return;
     modalState.draftText = input.value;

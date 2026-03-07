@@ -100,7 +100,35 @@ body {
 .header__actions {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 14px;
+}
+
+.header__blackout-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: #000;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.header__blackout-btn:hover {
+  border-color: rgba(255, 255, 255, 0.46);
+}
+
+.blackout-screen {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 6000;
+  display: none;
+  cursor: pointer;
+}
+
+.blackout-screen--active {
+  display: block;
 }
 
 .header__menu-toggle {
@@ -625,6 +653,12 @@ body {
   gap: 6px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.speed-test__country {
+  min-width: 16px;
+  text-align: center;
+  line-height: 1;
 }
 
 .speed-test__ping {
@@ -1368,6 +1402,11 @@ body {
   .header__menu-toggle {
     width: 34px;
     height: 34px;
+  }
+
+  .header__blackout-btn {
+    width: 24px;
+    height: 24px;
   }
 
   .drive-menu {

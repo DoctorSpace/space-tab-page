@@ -1,5 +1,24 @@
 const TEST_FILE = "https://speed.cloudflare.com/__down?bytes=5000000";
 
+async function detectCountry() {
+  try {
+    const response = await fetch("https://speed.cloudflare.com/cdn-cgi/trace?cacheBust=" + Date.now(), {
+      cache: "no-store"
+    });
+    if (!response.ok) throw new Error("Country detect failed");
+    const text = await response.text();
+    const codeLine = text.split("\n").find((line) => line.startsWith("loc="));
+    const code = codeLine ? codeLine.slice(4).trim().toUpperCase() : "";
+    return {
+      code
+    };
+  } catch {
+    return {
+      code: ""
+    };
+  }
+}
+
 async function testDownload(onProgress) {
   const start = performance.now();
   const response = await fetch(TEST_FILE + "&cacheBust=" + Date.now(), {
@@ -45,6 +64,14 @@ async function testPing(host = "yandex.ru") {
 export async function runSpeedTest(onProgress) {
   let downloadSpeed = 0;
   let ping = 0;
+
+  onProgress({ stage: "country", status: "testing" });
+  const country = await detectCountry();
+  if (country.code) {
+    onProgress({ stage: "country", status: "done", countryCode: country.code });
+  } else {
+    onProgress({ stage: "country", status: "error" });
+  }
   
   try {
     onProgress({ stage: "ping", status: "testing" });
@@ -64,5 +91,5 @@ export async function runSpeedTest(onProgress) {
     onProgress({ stage: "download", status: "error" });
   }
   
-  return { download: downloadSpeed, ping };
+  return { download: downloadSpeed, ping, countryCode: country.code };
 }
