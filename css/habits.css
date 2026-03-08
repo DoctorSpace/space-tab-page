@@ -811,6 +811,232 @@ body.modal-open #weather {
   background: linear-gradient(135deg, rgba(89, 176, 245, 0.4), rgba(83, 148, 231, 0.32));
 }
 
+.habits__save {
+  background: linear-gradient(135deg, rgba(74, 222, 128, 0.28), rgba(22, 163, 74, 0.24));
+  border: 1px solid rgba(74, 222, 128, 0.34);
+  color: rgba(232, 255, 241, 0.96);
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.habits__save:hover {
+  background: linear-gradient(135deg, rgba(74, 222, 128, 0.4), rgba(22, 163, 74, 0.34));
+}
+
+.habits-editor-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.habits-editor-modal__overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 10, 20, 0.76);
+  backdrop-filter: blur(5px);
+}
+
+.habits-editor-modal__content {
+  position: relative;
+  z-index: 1;
+  width: min(900px, 100%);
+  max-height: min(640px, 82vh);
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 85% 0%, rgba(122, 186, 230, 0.2), transparent 38%),
+    linear-gradient(160deg, rgba(16, 28, 44, 0.95), rgba(10, 18, 30, 0.98));
+  border: 1px solid rgba(180, 222, 255, 0.18);
+  border-radius: 20px;
+  box-shadow: 0 28px 48px rgba(0, 0, 0, 0.5);
+}
+
+.habits-editor-modal__header,
+.habits-editor-modal__footer {
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.habits-editor-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.habits-editor-modal__header h2 {
+  margin: 0;
+  color: rgba(244, 250, 255, 0.96);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.habits-editor-modal__close {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(235, 246, 255, 0.9);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.habits-editor-modal__body {
+  overflow: hidden;
+  padding: 16px 20px;
+}
+
+#habits-editor-list {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(131, 198, 249, 0.45) rgba(255, 255, 255, 0.06);
+}
+
+#habits-editor-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+#habits-editor-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+}
+
+#habits-editor-list::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(104, 183, 245, 0.9), rgba(73, 150, 231, 0.75));
+  border-radius: 999px;
+  border: 2px solid rgba(10, 18, 30, 0.55);
+}
+
+#habits-editor-list::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(128, 200, 255, 0.95), rgba(88, 166, 247, 0.82));
+}
+
+.habits-editor__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.habits-editor__row {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  gap: 12px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(180, 222, 255, 0.12);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.habits-editor__color {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.habits-editor__input {
+  width: 100%;
+  background: rgba(6, 13, 22, 0.34);
+  border: 1px solid rgba(170, 214, 248, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: rgba(237, 245, 255, 0.94);
+  font-size: 14px;
+}
+
+.habits-editor__input:focus {
+  outline: none;
+  border-color: rgba(131, 198, 249, 0.5);
+  box-shadow: 0 0 0 3px rgba(86, 166, 233, 0.14);
+}
+
+.habits-editor__delete {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 96, 96, 0.32);
+  background: rgba(255, 96, 96, 0.12);
+  color: rgba(255, 188, 188, 0.95);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.habits-editor__delete:hover {
+  background: rgba(255, 96, 96, 0.22);
+}
+
+.habits-editor-modal__footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: none;
+  display: flex;
+  gap: 10px;
+}
+
+.habits-editor__btn {
+  flex: 1;
+  padding: 11px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(129, 204, 255, 0.34);
+  background: linear-gradient(135deg, rgba(89, 176, 245, 0.28), rgba(83, 148, 231, 0.2));
+  color: rgba(229, 242, 255, 0.96);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.habits-editor__btn:hover {
+  background: linear-gradient(135deg, rgba(89, 176, 245, 0.4), rgba(83, 148, 231, 0.32));
+}
+
+.habits-editor__btn--save {
+  border-color: rgba(74, 222, 128, 0.34);
+  background: linear-gradient(135deg, rgba(74, 222, 128, 0.28), rgba(22, 163, 74, 0.24));
+  color: rgba(232, 255, 241, 0.96);
+}
+
+.habits-editor__btn--save:hover {
+  background: linear-gradient(135deg, rgba(74, 222, 128, 0.4), rgba(22, 163, 74, 0.34));
+}
+
+.habits__edit {
+  max-width: 760px;
+  margin: 14px auto 0;
+}
+
+.habits__edit-row {
+  display: grid;
+  grid-template-columns: 32px minmax(220px, 460px) 32px;
+  justify-content: start;
+  align-items: center;
+}
+
+.habits__input {
+  width: 100%;
+}
+
+.habits__edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
 .habits__modal {
   background: rgba(3, 10, 20, 0.72);
   backdrop-filter: blur(5px);
@@ -923,5 +1149,38 @@ body.modal-open #weather {
 
   .habits__grid {
     grid-template-columns: 1fr;
+  }
+
+  .habits__edit {
+    max-width: none;
+  }
+
+  .habits__edit-row {
+    grid-template-columns: 30px minmax(0, 1fr) 30px;
+  }
+
+  .habits__edit-actions {
+    flex-direction: column;
+  }
+
+  .habits-editor-modal__content {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+    border-radius: 14px;
+  }
+
+  .habits-editor-modal__header,
+  .habits-editor-modal__body,
+  .habits-editor-modal__footer {
+    padding: 12px;
+  }
+
+  .habits-editor__row {
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    gap: 8px;
+  }
+
+  #habits-editor-list {
+    max-height: calc(100vh - 180px);
   }
 }

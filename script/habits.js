@@ -7,6 +7,8 @@ const defaultHabits = [
   { id: 3, name: "Код", color: "#f472b6" },
 ];
 
+let habitsDraft = null;
+
 function loadData() {
   try {
     const data = localStorage.getItem(HABITS_KEY);
@@ -19,6 +21,138 @@ function loadData() {
 function saveData(data) {
   localStorage.setItem(HABITS_KEY, JSON.stringify(data));
   window.dispatchEvent(new CustomEvent("space-tab:habits-updated"));
+}
+
+function cloneHabits(habits) {
+  return habits.map((habit) => ({ ...habit }));
+}
+
+function initHabitsDraft() {
+  const data = loadData();
+  habitsDraft = cloneHabits(data.habits);
+}
+
+function renderHabitsEditorModal(modal) {
+  const list = modal.querySelector("#habits-editor-list");
+  if (!list) return;
+
+  const items = habitsDraft || [];
+  list.innerHTML = `
+    <div class="habits-editor__rows">
+      ${items
+        .map(
+          (habit) => `
+        <div class="habits-editor__row" data-habit-id="${habit.id}">
+          <input type="color" value="${habit.color}" class="habits-editor__color" data-field="color" aria-label="Цвет привычки">
+          <input type="text" value="${habit.name}" class="habits-editor__input" data-field="name" placeholder="Название привычки">
+          <button class="habits-editor__delete" data-action="delete-habit" data-habit-id="${habit.id}" aria-label="Удалить привычку">×</button>
+        </div>
+      `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function openHabitsEditorModal() {
+  const existing = document.getElementById("habits-editor-modal");
+  if (existing) existing.remove();
+
+  initHabitsDraft();
+
+  const modal = document.createElement("div");
+  modal.id = "habits-editor-modal";
+  modal.className = "habits-editor-modal";
+  modal.innerHTML = `
+    <div class="habits-editor-modal__overlay"></div>
+    <section class="habits-editor-modal__content" role="dialog" aria-modal="true" aria-label="Редактор привычек">
+      <header class="habits-editor-modal__header">
+        <h2>Редактор привычек</h2>
+        <button class="habits-editor-modal__close" data-action="close-editor" aria-label="Закрыть">×</button>
+      </header>
+      <div class="habits-editor-modal__body" id="habits-editor-list"></div>
+      <footer class="habits-editor-modal__footer">
+        <button class="habits-editor__btn" data-action="add-habit">+ Добавить</button>
+        <button class="habits-editor__btn habits-editor__btn--save" data-action="save-habits">Сохранить</button>
+      </footer>
+    </section>
+  `;
+
+  document.body.appendChild(modal);
+  document.body.style.overflow = "hidden";
+
+  const closeModal = () => {
+    modal.remove();
+    habitsDraft = null;
+    document.body.style.overflow = "";
+    document.removeEventListener("keydown", escHandler);
+  };
+
+  const escHandler = (event) => {
+    if (event.key === "Escape") closeModal();
+  };
+
+  renderHabitsEditorModal(modal);
+
+  modal.querySelector(".habits-editor-modal__overlay")?.addEventListener("click", closeModal);
+  document.addEventListener("keydown", escHandler);
+
+  modal.addEventListener("input", (event) => {
+    if (!habitsDraft) return;
+    const row = event.target.closest(".habits-editor__row");
+    if (!row) return;
+    const id = Number(row.dataset.habitId);
+    const habit = habitsDraft.find((h) => h.id === id);
+    if (!habit) return;
+
+    if (event.target.classList.contains("habits-editor__input")) {
+      habit.name = event.target.value;
+    }
+
+    if (event.target.classList.contains("habits-editor__color")) {
+      habit.color = event.target.value;
+    }
+  });
+
+  modal.addEventListener("click", (event) => {
+    const actionEl = event.target.closest("[data-action]");
+    if (!actionEl || !habitsDraft) return;
+
+    const action = actionEl.dataset.action;
+
+    if (action === "close-editor") {
+      closeModal();
+      return;
+    }
+
+    if (action === "add-habit") {
+      const newId = Math.max(0, ...habitsDraft.map((h) => h.id)) + 1;
+      habitsDraft.push({ id: newId, name: "Новая", color: "#54acfa" });
+      renderHabitsEditorModal(modal);
+      return;
+    }
+
+    if (action === "delete-habit") {
+      const id = Number(actionEl.dataset.habitId);
+      habitsDraft = habitsDraft.filter((habit) => habit.id !== id);
+      renderHabitsEditorModal(modal);
+      return;
+    }
+
+    if (action === "save-habits") {
+      const data = loadData();
+      data.habits = habitsDraft
+        .map((habit) => ({
+          id: habit.id,
+          name: String(habit.name || "").trim() || "Новая",
+          color: habit.color || "#54acfa"
+        }))
+        .filter((habit) => habit.name);
+      saveData(data);
+      render();
+      closeModal();
+    }
+  });
 }
 
 function getTodayStr() {
@@ -184,20 +318,6 @@ function render() {
         `;
         })
         .join("")}
-    </div>
-    <div class="habits__edit" id="habits-edit-panel" style="display: none;">
-      ${data.habits
-        .map(
-          (habit) => `
-        <div class="habits__edit-row" data-habit-id="${habit.id}">
-          <input type="color" value="${habit.color}" class="habits__color" data-field="color">
-          <input type="text" value="${habit.name}" class="habits__input" data-field="name">
-          <button class="habits__delete">×</button>
-        </div>
-      `
-        )
-        .join("")}
-      <button class="habits__add" id="habits-add-btn">+ Добавить</button>
     </div>
   `;
 
@@ -549,52 +669,7 @@ function attachMainEvents() {
   });
 
   document.getElementById("habits-edit-btn").addEventListener("click", () => {
-    const panel = document.getElementById("habits-edit-panel");
-    panel.style.display = panel.style.display === "none" ? "block" : "none";
-  });
-
-  container.querySelectorAll(".habits__input").forEach((input) => {
-    input.addEventListener("change", (e) => {
-      const id = parseInt(e.target.closest(".habits__edit-row").dataset.habitId);
-      const data = loadData();
-      const habit = data.habits.find((h) => h.id === id);
-      if (habit) {
-        habit.name = e.target.value;
-        saveData(data);
-        render();
-      }
-    });
-  });
-
-  container.querySelectorAll(".habits__color").forEach((input) => {
-    input.addEventListener("change", (e) => {
-      const id = parseInt(e.target.closest(".habits__edit-row").dataset.habitId);
-      const data = loadData();
-      const habit = data.habits.find((h) => h.id === id);
-      if (habit) {
-        habit.color = e.target.value;
-        saveData(data);
-        render();
-      }
-    });
-  });
-
-  container.querySelectorAll(".habits__delete").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      const id = parseInt(e.target.closest(".habits__edit-row").dataset.habitId);
-      const data = loadData();
-      data.habits = data.habits.filter((h) => h.id !== id);
-      saveData(data);
-      render();
-    });
-  });
-
-  document.getElementById("habits-add-btn").addEventListener("click", () => {
-    const data = loadData();
-    const newId = Math.max(0, ...data.habits.map((h) => h.id)) + 1;
-    data.habits.push({ id: newId, name: "Новая", color: "#54acfa" });
-    saveData(data);
-    render();
+    openHabitsEditorModal();
   });
 }
 
