@@ -11,6 +11,7 @@ import {
 } from "./links-data.js";
 import { hasGoogleIdentityAuth, getGoogleAuthToken, clearCachedGoogleAuthToken } from "./google-auth.js";
 import { loadSpaceTabDataFromDrive, saveSpaceTabDataToDrive } from "./google-drive-data.js";
+import { initCurrencyConverter } from "./currency-converter.js";
 
 const app = document.getElementById("app");
 let currentMode = "default";
@@ -764,10 +765,52 @@ function createHeader() {
           <span class="speed-test__download">-- <small>Mb/s</small></span>
         </div>
       </div>
+      <button class="header__currency-toggle" id="currency-menu-toggle" type="button" title="Конвертер валют" aria-label="Конвертер валют">₽/$</button>
       <button class="header__blackout-btn" id="blackout-toggle-btn" type="button" title="Чёрный экран на весь монитор" aria-label="Чёрный экран"></button>
       <button class="header__menu-toggle" id="drive-menu-toggle" title="Открыть меню синхронизации" aria-label="Открыть меню">
         <span></span><span></span><span></span>
       </button>
+      <div class="currency-menu__overlay" id="currency-menu-overlay"></div>
+      <aside class="currency-menu" id="currency-menu" aria-label="Конвертер валют">
+        <div class="currency-menu__head">Конвертер валют</div>
+        <div class="currency-menu__body">
+          <label class="currency-menu__label">
+            Сумма
+            <input class="currency-menu__input" id="currency-amount" type="number" min="0" step="0.01" value="1000">
+          </label>
+          <div class="currency-menu__row">
+            <div class="currency-select" data-select-kind="from">
+              <button class="currency-select__trigger" id="currency-from-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <span class="currency-select__value" id="currency-from-value">USD</span>
+                <span class="currency-select__caret">▾</span>
+              </button>
+              <div class="currency-select__panel" id="currency-from-panel" hidden>
+                <div class="currency-select__quick" id="currency-from-quick"></div>
+                <div class="currency-select__search-wrap">
+                  <input class="currency-select__search" id="currency-from-search" type="text" placeholder="Найти" autocomplete="off">
+                </div>
+                <div class="currency-select__list" id="currency-from-list" role="listbox" aria-label="Валюта источника"></div>
+              </div>
+            </div>
+            <button class="currency-menu__swap" id="currency-swap" type="button" title="Поменять местами">⇄</button>
+            <div class="currency-select" data-select-kind="to">
+              <button class="currency-select__trigger" id="currency-to-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <span class="currency-select__value" id="currency-to-value">RUB</span>
+                <span class="currency-select__caret">▾</span>
+              </button>
+              <div class="currency-select__panel" id="currency-to-panel" hidden>
+                <div class="currency-select__quick" id="currency-to-quick"></div>
+                <div class="currency-select__search-wrap">
+                  <input class="currency-select__search" id="currency-to-search" type="text" placeholder="Найти" autocomplete="off">
+                </div>
+                <div class="currency-select__list" id="currency-to-list" role="listbox" aria-label="Валюта назначения"></div>
+              </div>
+            </div>
+          </div>
+          <div class="currency-menu__result" id="currency-result">—</div>
+          <div class="currency-menu__meta" id="currency-meta">Загрузка курсов...</div>
+        </div>
+      </aside>
       <div class="drive-menu__overlay" id="drive-menu-overlay"></div>
       <aside class="drive-menu" id="drive-menu" aria-label="Синхронизация Google Drive">
         <div class="drive-menu__head">Google Drive</div>
@@ -797,12 +840,21 @@ function createHeader() {
     menuToggle?.classList.toggle("header__menu-toggle--open", open);
   };
 
+  const currencyConverter = initCurrencyConverter(header, {
+    onOpen: () => setMenuOpen(false)
+  });
+
   menuToggle?.addEventListener("click", () => {
+    currencyConverter.closeMenu();
     setMenuOpen(!menu?.classList.contains("drive-menu--open"));
   });
   menuOverlay?.addEventListener("click", () => setMenuOpen(false));
+
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") setMenuOpen(false);
+    if (event.key === "Escape") {
+      setMenuOpen(false);
+      currencyConverter.closeMenu();
+    }
   });
 
   header
