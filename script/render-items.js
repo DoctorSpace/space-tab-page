@@ -1515,7 +1515,10 @@ function init() {
 
   const linksNav = createLinksNav();
   const habitsEl = document.getElementById("habits-tracker");
-  if (habitsEl?.parentNode) {
+  const widgetsPanelEl = document.getElementById("widgets-panel");
+  if (widgetsPanelEl?.parentNode) {
+    widgetsPanelEl.parentNode.insertBefore(linksNav, widgetsPanelEl.nextSibling);
+  } else if (habitsEl?.parentNode) {
     habitsEl.parentNode.insertBefore(linksNav, habitsEl.nextSibling);
   }
   linksNavRef = linksNav;

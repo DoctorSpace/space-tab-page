@@ -1,4 +1,5 @@
 export const HABITS_KEY = "habits_tracker_data";
+const HABITS_COLLAPSED_KEY = "habits_tracker_collapsed";
 const MIN_DATE = new Date(2025, 0, 1);
 
 const defaultHabits = [
@@ -21,6 +22,22 @@ function loadData() {
 function saveData(data) {
   localStorage.setItem(HABITS_KEY, JSON.stringify(data));
   window.dispatchEvent(new CustomEvent("space-tab:habits-updated"));
+}
+
+function isHabitsCollapsed() {
+  try {
+    return localStorage.getItem(HABITS_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setHabitsCollapsed(value) {
+  try {
+    localStorage.setItem(HABITS_COLLAPSED_KEY, value ? "1" : "0");
+  } catch {
+    // ignore localStorage errors
+  }
 }
 
 function cloneHabits(habits) {
@@ -84,7 +101,15 @@ function openHabitsEditorModal() {
   const closeModal = () => {
     modal.remove();
     habitsDraft = null;
-    document.body.style.overflow = "";
+    const overviewOpen = document
+      .getElementById("habits-overview-modal")
+      ?.classList.contains("habits-overview-modal--open");
+    const habitDetailsOpen = document.getElementById("habits-modal")?.style.display === "flex";
+
+    if (!overviewOpen && !habitDetailsOpen) {
+      document.body.style.overflow = "";
+      document.body.classList.remove("modal-open");
+    }
     document.removeEventListener("keydown", escHandler);
   };
 
@@ -149,7 +174,7 @@ function openHabitsEditorModal() {
         }))
         .filter((habit) => habit.name);
       saveData(data);
-      render();
+      renderMainAndOverview();
       closeModal();
     }
   });
@@ -190,6 +215,38 @@ function getWeeksBack(weeksCount = 30) {
     current.setDate(current.getDate() + 7);
   }
   return weeks;
+}
+
+function getRecentDates(daysCount) {
+  const dates = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  for (let i = daysCount - 1; i >= 0; i--) {
+    const day = new Date(today);
+    day.setDate(day.getDate() - i);
+    dates.push(formatDate(day));
+  }
+
+  return dates;
+}
+
+function getCurrentWeekRange() {
+  const monday = getMonday(new Date());
+  const sunday = new Date(monday);
+  sunday.setDate(sunday.getDate() + 6);
+
+  return {
+    start: formatDate(monday),
+    end: formatDate(sunday)
+  };
+}
+
+function getVisibleCompactDays(containerWidth) {
+  const safeWidth = Number(containerWidth) || 360;
+  const horizontalChrome = 58;
+  const cellStep = 24;
+  return Math.max(7, Math.min(42, Math.floor((safeWidth - horizontalChrome) / cellStep)));
 }
 
 function hexToRgb(hex) {
@@ -256,20 +313,9 @@ function isYesterday(d, today) {
   return d.getTime() === yesterday.getTime();
 }
 
-function render() {
-  const container = document.getElementById("habits-tracker");
-  if (!container) return;
-
-  const data = loadData();
-  const weeks = getWeeksBack(30);
-  const today = getTodayStr();
-
-  let html = `
-    <div class="habits__header">
-      <h3 class="habits__title">Habits</h3>
-      <button class="habits__toggle" id="habits-edit-btn">✎</button>
-    </div>
-    <div class="habits__grid">
+function renderExpandedGrid(data, weeks, today) {
+  return `
+    <div class="habits__grid habits__grid--expanded">
       ${data.habits
         .map((habit) => {
           const streak = calculateStreak(habit.id, data);
@@ -283,7 +329,8 @@ function render() {
               </span>
               <button class="habits__check ${data.checked[`${habit.id}_${today}`] ? "habits__check--done" : ""}"
                       data-habit-id="${habit.id}" data-date="${today}"
-                      style="--habit-color: ${habit.color}">
+                      style="--habit-color: ${habit.color}; --rgb: ${hexToRgb(habit.color)}"
+                      title="Отметить сегодня">
                 ✓
               </button>
             </div>
@@ -295,7 +342,7 @@ function render() {
                   <div class="habits__row">
                     ${weeks
                       .map((week) => {
-                        const d = new Date(week.start + 'T00:00:00');
+                        const d = new Date(week.start + "T00:00:00");
                         d.setDate(d.getDate() + dayIndex);
                         const dateStr = formatDate(d);
                         const isChecked = data.checked[`${habit.id}_${dateStr}`];
@@ -320,9 +367,228 @@ function render() {
         .join("")}
     </div>
   `;
+}
+
+function renderCompactList(data, today, visibleDaysCount) {
+  const recentDates = getRecentDates(visibleDaysCount);
+  const currentWeek = getCurrentWeekRange();
+
+  if (!data.habits.length) {
+    return '<div class="habits__empty">Добавьте привычку через кнопку редактирования.</div>';
+  }
+
+  return `
+    <div class="habits__list" role="list">
+      ${data.habits
+        .map((habit) => {
+          const streak = calculateStreak(habit.id, data);
+          const isTodayChecked = Boolean(data.checked[`${habit.id}_${today}`]);
+
+          return `
+            <article class="habits__item" data-habit-id="${habit.id}" role="listitem">
+              <div class="habits__item-head">
+                <button class="habits__item-name" data-action="open-habit" data-habit-id="${habit.id}" style="--habit-color: ${habit.color}">
+                  ${habit.name}
+                </button>
+                <span class="habits__item-streak ${streak.current > 0 ? "habits__item-streak--active" : ""}">
+                  🔥 ${streak.current}/${streak.max}
+                </span>
+                <button class="habits__check ${isTodayChecked ? "habits__check--done" : ""}"
+                        data-habit-id="${habit.id}"
+                        data-date="${today}"
+                        style="--habit-color: ${habit.color}; --rgb: ${hexToRgb(habit.color)}"
+                        title="Отметить сегодня">
+                  ✓
+                </button>
+              </div>
+              <div class="habits__week" role="group" aria-label="Последние дни привычки ${habit.name}">
+                ${recentDates
+                  .map((dateStr) => {
+                    const isChecked = Boolean(data.checked[`${habit.id}_${dateStr}`]);
+                    const isFuture = dateStr > today;
+                    const isToday = dateStr === today;
+                    const isCurrentWeek = dateStr >= currentWeek.start && dateStr <= currentWeek.end;
+                    return `
+                      <button class="habits__week-cell ${isChecked ? "habits__week-cell--checked" : ""} ${isFuture ? "habits__week-cell--future" : ""} ${isToday ? "habits__week-cell--today" : ""} ${isCurrentWeek ? "habits__week-cell--current-week" : ""}"
+                              style="--habit-color: ${habit.color}; --rgb: ${hexToRgb(habit.color)}"
+                              data-habit-id="${habit.id}"
+                              data-date="${dateStr}"
+                              ${isFuture ? "disabled" : ""}
+                              title="${dateStr}">
+                      </button>
+                    `;
+                  })
+                  .join("")}
+              </div>
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function setHabitChecked(habitId, date) {
+  const key = `${habitId}_${date}`;
+  const data = loadData();
+  data.checked[key] = !data.checked[key];
+  saveData(data);
+}
+
+function getTodayHabitsStatus(data, today) {
+  const total = data.habits.length;
+  const done = data.habits.reduce((acc, habit) => {
+    return acc + (data.checked[`${habit.id}_${today}`] ? 1 : 0);
+  }, 0);
+  const isDone = total === 0 || done >= total;
+  return { total, done, isDone };
+}
+
+function renderMainAndOverview() {
+  render();
+  renderOverviewModalContent();
+}
+
+function restoreMainListScroll(scrollTop) {
+  if (typeof scrollTop !== "number") return;
+  requestAnimationFrame(() => {
+    const nextList = document.querySelector("#habits-tracker .habits__list");
+    if (nextList) {
+      nextList.scrollTop = scrollTop;
+    }
+  });
+}
+
+function render() {
+  const container = document.getElementById("habits-tracker");
+  if (!container) return;
+
+  const data = loadData();
+  const today = getTodayStr();
+  const isCollapsed = isHabitsCollapsed();
+  const visibleDaysCount = getVisibleCompactDays(container.clientWidth);
+  const todayStatus = getTodayHabitsStatus(data, today);
+
+  container.classList.toggle("habits-tracker--collapsed", isCollapsed);
+
+  let html = `
+    <div class="habits__header">
+      <h3 class="habits__title">
+        Habits
+        <span class="habits__status-icon ${todayStatus.isDone ? "habits__status-icon--done" : ""}" title="${todayStatus.isDone ? "Все активности выполнены" : `Осталось: ${todayStatus.total - todayStatus.done}`}">●</span>
+      </h3>
+      <div class="habits__actions">
+        <button class="habits__toggle" id="habits-collapse-btn" title="${isCollapsed ? "Развернуть" : "Свернуть"}">${isCollapsed ? "▸" : "▾"}</button>
+        <button class="habits__toggle" id="habits-expand-btn" title="Развернуть">⤢</button>
+      </div>
+    </div>
+    ${isCollapsed ? "" : renderCompactList(data, today, visibleDaysCount)}
+  `;
 
   container.innerHTML = html;
   attachMainEvents();
+}
+
+function createOverviewModal() {
+  if (document.getElementById("habits-overview-modal")) return;
+
+  const modal = document.createElement("div");
+  modal.id = "habits-overview-modal";
+  modal.className = "habits-overview-modal";
+  modal.innerHTML = `
+    <div class="habits-overview-modal__overlay" data-action="close-overview"></div>
+    <section class="habits-overview-modal__content" role="dialog" aria-modal="true" aria-label="Все привычки">
+      <header class="habits-overview-modal__header">
+        <h2>Все привычки</h2>
+        <div class="habits-overview-modal__actions">
+          <button class="habits__toggle habits__toggle--edit-overview" data-action="edit-overview" title="Редактировать">Редактировать</button>
+          <button class="habits-overview-modal__close" data-action="close-overview" aria-label="Закрыть">×</button>
+        </div>
+      </header>
+      <div class="habits-overview-modal__body" id="habits-overview-modal-body"></div>
+    </section>
+  `;
+
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (event) => {
+    const actionEl = event.target.closest("[data-action]");
+    const isCell = event.target.closest(".habits__cell:not(.habits__cell--future)");
+    const isCheck = event.target.closest(".habits__check");
+
+    if (actionEl?.dataset.action === "close-overview") {
+      closeOverviewModal();
+      return;
+    }
+
+    if (actionEl?.dataset.action === "edit-overview") {
+      openHabitsEditorModal();
+      return;
+    }
+
+    if (isCheck) {
+      event.stopPropagation();
+      const habitId = isCheck.dataset.habitId;
+      const date = isCheck.dataset.date;
+      setHabitChecked(habitId, date);
+      renderMainAndOverview();
+      return;
+    }
+
+    if (isCell) {
+      const habitId = Number(isCell.dataset.habitId);
+      currentHabitId = habitId;
+
+      const today = new Date();
+      currentModalMonth = today.getMonth();
+      currentModalYear = today.getFullYear();
+
+      renderModal();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (document.getElementById("habits-modal")?.style.display === "flex") return;
+    if (modal.classList.contains("habits-overview-modal--open")) {
+      closeOverviewModal();
+    }
+  });
+}
+
+function renderOverviewModalContent() {
+  const modal = document.getElementById("habits-overview-modal");
+  if (!modal || !modal.classList.contains("habits-overview-modal--open")) return;
+
+  const body = document.getElementById("habits-overview-modal-body");
+  if (!body) return;
+
+  const data = loadData();
+  const weeks = getWeeksBack(30);
+  const today = getTodayStr();
+
+  body.innerHTML = renderExpandedGrid(data, weeks, today);
+}
+
+function openOverviewModal() {
+  createOverviewModal();
+  const modal = document.getElementById("habits-overview-modal");
+  if (!modal) return;
+
+  modal.classList.add("habits-overview-modal--open");
+  document.body.style.overflow = "hidden";
+  document.body.classList.add("modal-open");
+  renderOverviewModalContent();
+}
+
+function closeOverviewModal() {
+  const modal = document.getElementById("habits-overview-modal");
+  if (!modal) return;
+
+  modal.classList.remove("habits-overview-modal--open");
+  if (document.getElementById("habits-modal")?.style.display === "flex") return;
+  document.body.style.overflow = "";
+  document.body.classList.remove("modal-open");
 }
 
 let currentHabitId = null;
@@ -540,7 +806,7 @@ function renderModal() {
       d.checked[key] = !d.checked[key];
       saveData(d);
       renderModal();
-      render();
+      renderMainAndOverview();
     });
   });
 
@@ -626,15 +892,19 @@ function createModal() {
 
   document.getElementById("habits-modal-close").addEventListener("click", () => {
     modal.style.display = "none";
-    document.body.style.overflow = "";
-    document.body.classList.remove("modal-open");
+    if (!document.getElementById("habits-overview-modal")?.classList.contains("habits-overview-modal--open")) {
+      document.body.style.overflow = "";
+      document.body.classList.remove("modal-open");
+    }
   });
 
   modal.addEventListener("click", (e) => {
     if (e.target === modal) {
       modal.style.display = "none";
-      document.body.style.overflow = "";
-      document.body.classList.remove("modal-open");
+      if (!document.getElementById("habits-overview-modal")?.classList.contains("habits-overview-modal--open")) {
+        document.body.style.overflow = "";
+        document.body.classList.remove("modal-open");
+      }
     }
   });
 }
@@ -642,39 +912,70 @@ function createModal() {
 function attachMainEvents() {
   const container = document.getElementById("habits-tracker");
 
+  const openHabitDetails = (habitId) => {
+    currentHabitId = Number(habitId);
+    const today = new Date();
+    currentModalMonth = today.getMonth();
+    currentModalYear = today.getFullYear();
+    renderModal();
+  };
+
   container.querySelectorAll(".habits__check").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
+      const currentList = container.querySelector(".habits__list");
+      const scrollTop = currentList ? currentList.scrollTop : null;
       const habitId = btn.dataset.habitId;
       const date = btn.dataset.date;
-      const key = `${habitId}_${date}`;
-      const data = loadData();
-      data.checked[key] = !data.checked[key];
-      saveData(data);
-      render();
+      setHabitChecked(habitId, date);
+      renderMainAndOverview();
+      restoreMainListScroll(scrollTop);
     });
   });
 
-  container.querySelectorAll(".habits__cell:not(.habits__cell--future)").forEach((cell) => {
-    cell.addEventListener("click", () => {
-      const habitId = parseInt(cell.dataset.habitId);
-      currentHabitId = habitId;
-      
-      const today = new Date();
-      currentModalMonth = today.getMonth();
-      currentModalYear = today.getFullYear();
-      
-      renderModal();
+  container.querySelectorAll(".habits__week-cell:not(.habits__week-cell--future)").forEach((cell) => {
+    cell.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openHabitDetails(cell.dataset.habitId);
     });
   });
 
-  document.getElementById("habits-edit-btn").addEventListener("click", () => {
-    openHabitsEditorModal();
+  container.querySelectorAll(".habits__item").forEach((item) => {
+    item.addEventListener("click", () => {
+      openHabitDetails(item.dataset.habitId);
+    });
+  });
+
+  container.querySelectorAll('[data-action="open-habit"]').forEach((button) => {
+    button.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openHabitDetails(button.dataset.habitId);
+    });
+  });
+
+  document.getElementById("habits-collapse-btn")?.addEventListener("click", () => {
+    setHabitsCollapsed(!isHabitsCollapsed());
+    render();
+  });
+
+  document.getElementById("habits-expand-btn")?.addEventListener("click", () => {
+    openOverviewModal();
   });
 }
 
 export function initHabits() {
   render();
+
+  if (!window.__habitsResizeBound) {
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        render();
+      }, 120);
+    });
+    window.__habitsResizeBound = true;
+  }
 }
 
 export function toggleHabits(show) {
