@@ -982,6 +982,13 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.item-editor-dock__preview-icon:hover {
+  border-color: rgba(129, 204, 255, 0.5);
+  background: rgba(84, 172, 250, 0.14);
 }
 
 .item-editor-dock__preview-icon img {
@@ -997,6 +1004,82 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.item-editor__picker-wrap {
+  border: 1px solid rgba(180, 222, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px;
+}
+
+.item-icon-picker-popover {
+  position: fixed;
+  z-index: 1600;
+  width: min(220px, calc(100vw - 16px));
+  border: 1px solid rgba(180, 222, 255, 0.16);
+  border-radius: 10px;
+  background: radial-gradient(circle at 85% 0%, rgba(122, 186, 230, 0.18), transparent 45%),
+    linear-gradient(160deg, rgba(16, 28, 44, 0.96), rgba(10, 18, 30, 0.98));
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.4);
+  padding: 8px;
+}
+
+.item-editor__picker {
+  max-height: 180px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(131, 198, 249, 0.45) rgba(255, 255, 255, 0.06);
+}
+
+.item-editor__picker::-webkit-scrollbar {
+  width: 9px;
+}
+
+.item-editor__picker::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+}
+
+.item-editor__picker::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(104, 183, 245, 0.9), rgba(73, 150, 231, 0.75));
+  border-radius: 999px;
+  border: 2px solid rgba(10, 18, 30, 0.55);
+}
+
+.item-editor__picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 6px;
+}
+
+.item-editor__picker-item {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(6, 13, 22, 0.45);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.item-editor__picker-item img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.item-editor__picker-item:hover,
+.item-editor__picker-item--active {
+  border-color: rgba(129, 204, 255, 0.6);
+  background: rgba(84, 172, 250, 0.2);
+}
+
+.item-editor__picker-empty {
+  font-size: 12px;
+  color: rgba(216, 231, 246, 0.82);
 }
 
 .item-editor-dock__grid {
