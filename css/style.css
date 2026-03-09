@@ -317,7 +317,7 @@ body {
 .currency-menu {
   position: fixed;
   top: 68px;
-  right: 280px;
+  left: 8px;
   width: 320px;
   border-radius: 14px;
   border: 1px solid rgba(180, 222, 255, 0.2);
@@ -920,27 +920,30 @@ body {
 }
 
 .speed-test {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
 }
 
 .speed-test__btn {
-  background: rgba(255, 255, 255, 0.08);
+  width: 36px;
+  height: 36px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 6px 10px;
+  border-radius: 10px;
+  padding: 0;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(232, 243, 255, 0.95);
+  background: rgba(255, 255, 255, 0.08);
   transition: all 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
 }
 
 .speed-test__btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: rgba(101, 181, 247, 0.22);
+  border-color: rgba(132, 205, 255, 0.46);
 }
 
 .speed-test__btn--running {
@@ -953,11 +956,30 @@ body {
 }
 
 .speed-test__results {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: max-content;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(180, 222, 255, 0.2);
+  background: radial-gradient(circle at 85% 0%, rgba(122, 186, 230, 0.22), transparent 42%),
+    linear-gradient(160deg, rgba(16, 28, 44, 0.96), rgba(10, 18, 30, 0.98));
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.32);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  z-index: 1200;
+  pointer-events: none;
+}
+
+.speed-test__results[hidden] {
+  display: none;
 }
 
 .speed-test__country {
@@ -1749,8 +1771,20 @@ body {
     display: none;
   }
   
+  .speed-test {
+    position: relative;
+  }
+
+  .speed-test__btn {
+    width: 34px;
+    height: 34px;
+  }
+
   .speed-test__results {
-    display: none;
+    top: calc(100% + 6px);
+    right: -4px;
+    padding: 7px 9px;
+    font-size: 11px;
   }
 
   .links-nav {
@@ -1815,7 +1849,7 @@ body {
 
   .currency-menu {
     top: 58px;
-    right: 8px;
+    left: 8px;
     width: min(320px, calc(100vw - 16px));
   }
 

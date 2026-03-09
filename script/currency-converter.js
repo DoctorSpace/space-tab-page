@@ -174,6 +174,20 @@ export function initCurrencyConverter(header, options = {}) {
   let fromFilter = "";
   let toFilter = "";
 
+  const positionMenu = () => {
+    const toggleRect = toggle.getBoundingClientRect();
+    const menuWidth = Math.min(320, window.innerWidth - 16);
+    const left = Math.min(
+      Math.max(8, toggleRect.right - menuWidth),
+      Math.max(8, window.innerWidth - menuWidth - 8)
+    );
+    const top = toggleRect.bottom + 8;
+
+    menu.style.width = `${menuWidth}px`;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  };
+
   const setMeta = (headline, details = "") => {
     if (!details) {
       metaEl.textContent = headline;
@@ -209,6 +223,7 @@ export function initCurrencyConverter(header, options = {}) {
   };
 
   const setMenuOpen = (open) => {
+    if (open) positionMenu();
     menu.classList.toggle("currency-menu--open", open);
     overlay.classList.toggle("currency-menu__overlay--open", open);
     toggle.classList.toggle("header__currency-toggle--open", open);
@@ -454,6 +469,11 @@ export function initCurrencyConverter(header, options = {}) {
     if (event.target.closest("#currency-menu") || event.target.closest("#currency-menu-toggle")) return;
     closePanels();
     setMenuOpen(false);
+  });
+
+  window.addEventListener("resize", () => {
+    if (!menu.classList.contains("currency-menu--open")) return;
+    positionMenu();
   });
 
   return {

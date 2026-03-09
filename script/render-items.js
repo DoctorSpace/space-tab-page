@@ -16,6 +16,7 @@ import { initCurrencyConverter } from "./currency-converter.js";
 const app = document.getElementById("app");
 let currentMode = "default";
 let speedTestRunning = false;
+let speedTestResultsTimer = null;
 let editMode = false;
 let editingItem = null;
 let linksState = loadLinksState();
@@ -757,7 +758,7 @@ function createHeader() {
             <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
           </svg>
         </button>
-        <div class="speed-test__results">
+        <div class="speed-test__results" hidden>
           <span class="speed-test__country" title="Страна подключения">--</span>
           <span class="speed-test__divider">/</span>
           <span class="speed-test__ping">-- <small>ms</small></span>
@@ -939,6 +940,13 @@ function initBlackoutOverlay() {
 }
 
 function handleSpeedTest(header) {
+  const resultsEl = header.querySelector(".speed-test__results");
+
+  if (!resultsEl.hidden && !speedTestRunning) {
+    hideSpeedTestResults(resultsEl);
+    return;
+  }
+
   if (speedTestRunning) return;
   speedTestRunning = true;
 
@@ -948,10 +956,11 @@ function handleSpeedTest(header) {
   const downloadEl = header.querySelector(".speed-test__download");
 
   btn.classList.add("speed-test__btn--running");
+  hideSpeedTestResults(resultsEl);
   countryEl.textContent = "--";
   countryEl.title = "Страна подключения";
-  pingEl.innerHTML = '<span class="speed-test__spinner"></span>';
-  downloadEl.innerHTML = '<span class="speed-test__spinner"></span>';
+  pingEl.innerHTML = '-- <small>ms</small>';
+  downloadEl.innerHTML = '-- <small>Mb/s</small>';
 
   runSpeedTest((progress) => {
     if (progress.stage === "country") {
@@ -980,7 +989,20 @@ function handleSpeedTest(header) {
   }).finally(() => {
     speedTestRunning = false;
     btn.classList.remove("speed-test__btn--running");
+    resultsEl.hidden = false;
+    clearTimeout(speedTestResultsTimer);
+    speedTestResultsTimer = setTimeout(() => {
+      hideSpeedTestResults(resultsEl);
+    }, 6000);
   });
+}
+
+function hideSpeedTestResults(resultsEl) {
+  if (speedTestResultsTimer) {
+    clearTimeout(speedTestResultsTimer);
+    speedTestResultsTimer = null;
+  }
+  resultsEl.hidden = true;
 }
 
 function renderItemEditorDock() {
