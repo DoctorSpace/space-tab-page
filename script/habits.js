@@ -475,7 +475,9 @@ function render() {
     <div class="habits__header">
       <h3 class="habits__title">
         Habits
-        <span class="habits__status-icon ${todayStatus.isDone ? "habits__status-icon--done" : ""}" title="${todayStatus.isDone ? "Все активности выполнены" : `Осталось: ${todayStatus.total - todayStatus.done}`}">●</span>
+        <span class="habits__status-icon ${todayStatus.isDone ? "habits__status-icon--done" : ""}" title="${todayStatus.isDone ? "Все активности выполнены" : `Осталось: ${todayStatus.total - todayStatus.done}`}">
+          ${todayStatus.isDone ? "Выполнено" : `Осталось: ${Math.max(0, todayStatus.total - todayStatus.done)}`}
+        </span>
       </h3>
       <div class="habits__actions">
         <button class="habits__toggle" id="habits-collapse-btn" title="${isCollapsed ? "Развернуть" : "Свернуть"}">${isCollapsed ? "▸" : "▾"}</button>

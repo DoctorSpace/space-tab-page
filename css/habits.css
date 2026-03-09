@@ -677,17 +677,23 @@ body.modal-open #weather {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  color: transparent;
-  background: #f59e0b;
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.65);
+  height: 22px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: rgba(255, 228, 179, 0.98);
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.2);
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
 }
 
 .habits__status-icon--done {
-  background: rgba(203, 213, 225, 0.55);
-  box-shadow: none;
+  color: rgba(210, 255, 230, 0.98);
+  border-color: rgba(74, 222, 128, 0.6);
+  background: rgba(74, 222, 128, 0.24);
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.25);
 }
 
 .habits__toggle {
