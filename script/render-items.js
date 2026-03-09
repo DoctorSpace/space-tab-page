@@ -61,6 +61,11 @@ function normalizeLocalIconValue(value) {
   return raw;
 }
 
+function normalizeItemBorderColor(value) {
+  const raw = String(value || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw.toUpperCase() : "";
+}
+
 function readDirectoryEntries(directoryEntry) {
   return new Promise((resolve, reject) => {
     const reader = directoryEntry.createReader();
@@ -1034,6 +1039,12 @@ function renderItemEditorDock() {
         <img id="item-editor-preview-img" src="${resolveEditorIconPreview(item.img, item.link)}" alt="preview" loading="lazy" />
       </button>
       <div class="item-editor-dock__preview-text" id="item-editor-preview-text">${item.name || "Новая ссылка"}</div>
+      <div class="item-editor-dock__preview-color">
+        <label class="item-editor__color-label item-editor__color-label--inline" title="Цвет обводки при наведении">
+          <input class="item-editor__color-input" data-field="borderColor" data-custom-value="${normalizeItemBorderColor(item.borderColor) ? "true" : "false"}" type="color" value="${normalizeItemBorderColor(item.borderColor) || "#83C6F9"}">
+        </label>
+        <button class="item-editor__btn item-editor__btn--ghost item-editor__btn--icon" type="button" data-action="reset-border-color" title="Сбросить цвет обводки" aria-label="Сбросить цвет обводки">↺</button>
+      </div>
     </div>
     <div class="item-editor-dock__grid">
       <input class="item-editor__input" data-field="name" placeholder="Название" value="${item.name || ""}">
@@ -1067,6 +1078,8 @@ function renderItemEditorDock() {
       positionItemIconPickerPopover(currentDock, popover);
     });
   }
+
+  refreshEditorDockPreview();
 }
 
 function refreshEditorDockPreview() {
@@ -1076,14 +1089,23 @@ function refreshEditorDockPreview() {
   const name = dock.querySelector('[data-field="name"]')?.value?.trim() || "Новая ссылка";
   const link = dock.querySelector('[data-field="link"]')?.value?.trim() || "https://example.com";
   const img = dock.querySelector('[data-field="img"]')?.value?.trim() || "";
+  const borderInput = dock.querySelector('[data-field="borderColor"]');
+  const borderColor = borderInput?.dataset.customValue === "true"
+    ? normalizeItemBorderColor(borderInput.value)
+    : "";
   const previewImg = dock.querySelector("#item-editor-preview-img");
   const previewText = dock.querySelector("#item-editor-preview-text");
+  const previewWrap = dock.querySelector(".item-editor-dock__preview");
 
   if (previewImg) {
     previewImg.src = resolveEditorIconPreview(img, link);
     previewImg.alt = name;
   }
   if (previewText) previewText.textContent = name;
+  if (previewWrap) {
+    previewWrap.style.setProperty("--item-border-color", borderColor || "rgba(180, 222, 255, 0.16)");
+    previewWrap.classList.toggle("item-editor-dock__preview--custom-border", Boolean(borderColor));
+  }
 
   if (iconPickerOpen) {
     renderItemIconPicker({
@@ -1160,8 +1182,14 @@ function renderCategories() {
       link.dataset.name = item.name;
       link.dataset.categoryIndex = String(catIndex);
       link.dataset.itemIndex = String(itemIndex);
+      link.dataset.size = `${placement.colSpan}x${placement.rowSpan}`;
       link.target = "_self";
       link.innerHTML = `<img src="${item.img || fallbackFavicon(item.link)}" alt="${item.name}" loading="lazy" />`;
+      const borderColor = normalizeItemBorderColor(item.borderColor);
+      if (borderColor) {
+        link.style.setProperty("--item-border-color", borderColor);
+        link.style.setProperty("--item-hover-shadow", `${borderColor}33`);
+      }
 
       wrap.appendChild(link);
 
@@ -1221,6 +1249,10 @@ function saveEditedItem(catIndex, itemIndex, editorEl) {
   const name = editorEl.querySelector('[data-field="name"]')?.value?.trim();
   const link = editorEl.querySelector('[data-field="link"]')?.value?.trim();
   const img = normalizeLocalIconValue(editorEl.querySelector('[data-field="img"]')?.value?.trim());
+  const borderInput = editorEl.querySelector('[data-field="borderColor"]');
+  const borderColor = borderInput?.dataset.customValue === "true"
+    ? normalizeItemBorderColor(borderInput.value)
+    : "";
   const selectedSize = editorEl.querySelector('.item-editor__size-btn--active')?.dataset.size || "1x1";
   const [colSpanRaw, rowSpanRaw] = selectedSize.split("x");
   const colSpan = Math.min(2, Math.max(1, Number(colSpanRaw || 1)));
@@ -1229,6 +1261,7 @@ function saveEditedItem(catIndex, itemIndex, editorEl) {
   item.name = name || "Новая ссылка";
   item.link = link || "https://";
   item.img = img || "";
+  item.borderColor = borderColor;
   item.colSpan = colSpan;
   item.rowSpan = rowSpan;
   item.wide = colSpan === 2 && rowSpan === 1;
@@ -1254,9 +1287,14 @@ function applyItemSizeImmediately(catIndex, itemIndex, sizeValue, editorEl) {
     const name = editorEl.querySelector('[data-field="name"]')?.value?.trim();
     const link = editorEl.querySelector('[data-field="link"]')?.value?.trim();
     const img = normalizeLocalIconValue(editorEl.querySelector('[data-field="img"]')?.value?.trim());
+    const borderInput = editorEl.querySelector('[data-field="borderColor"]');
+    const borderColor = borderInput?.dataset.customValue === "true"
+      ? normalizeItemBorderColor(borderInput.value)
+      : "";
     item.name = name || item.name || "Новая ссылка";
     item.link = link || item.link || "https://";
     item.img = img || "";
+    item.borderColor = borderColor;
   }
 
   item.colSpan = colSpan;
@@ -1341,6 +1379,7 @@ function attachAppEvents() {
         name: "Новая ссылка",
         link: "https://",
         img: "",
+        borderColor: "",
         gridIndex: firstFree,
         colSpan: 1,
         rowSpan: 1,
@@ -1499,6 +1538,16 @@ function attachAppEvents() {
       return;
     }
 
+    if (action === "reset-border-color") {
+      const borderInput = dock.querySelector('[data-field="borderColor"]');
+      if (borderInput) {
+        borderInput.value = "#83C6F9";
+        borderInput.dataset.customValue = "false";
+        refreshEditorDockPreview();
+      }
+      return;
+    }
+
     if (action === "save-item") {
       saveEditedItem(categoryIndex, itemIndex, dock);
       return;
@@ -1532,6 +1581,9 @@ function attachAppEvents() {
     if (!dock) return;
     if (!dock.contains(event.target)) return;
     if (!event.target.closest("[data-field]")) return;
+    if (event.target.matches('[data-field="borderColor"]')) {
+      event.target.dataset.customValue = "true";
+    }
     refreshEditorDockPreview();
   });
 

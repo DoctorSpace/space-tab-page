@@ -70,6 +70,9 @@ export function sanitizeCategories(categories) {
               name: (item.name || "").trim() || "Новая ссылка",
               link: (item.link || "").trim(),
               img: (item.img || "").trim(),
+              borderColor: /^#[0-9a-fA-F]{6}$/.test(String(item.borderColor || "").trim())
+                ? String(item.borderColor).trim()
+                : "",
               gridIndex: Number.isFinite(Number(item.gridIndex))
                 ? Math.max(0, Math.min(15, Number(item.gridIndex)))
                 : null,
