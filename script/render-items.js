@@ -11,10 +11,12 @@ import {
 } from "./links-data.js";
 import { hasGoogleIdentityAuth, getGoogleAuthToken, clearCachedGoogleAuthToken } from "./google-auth.js";
 import { loadSpaceTabDataFromDrive, saveSpaceTabDataToDrive } from "./google-drive-data.js";
+import { initCurrencyConverter } from "./currency-converter.js";
 
 const app = document.getElementById("app");
 let currentMode = "default";
 let speedTestRunning = false;
+let speedTestResultsTimer = null;
 let editMode = false;
 let editingItem = null;
 let linksState = loadLinksState();
@@ -25,6 +27,9 @@ let headerRef = null;
 let linksNavRef = null;
 let requestStatusRef = null;
 let blackoutActive = false;
+let iconPickerOpen = false;
+let localItemIconsCache = null;
+let localItemIconsLoading = false;
 const dragState = {
   active: false,
   sourceCategoryIndex: null,
@@ -42,6 +47,212 @@ function resolveEditorIconPreview(imgValue, linkValue) {
   const direct = String(imgValue || "").trim();
   if (direct) return direct;
   return fallbackFavicon(linkValue || "https://example.com");
+}
+
+function normalizeLocalIconValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("/img/icons/items/")) return raw;
+  if (raw.includes("/img/icons/items/")) {
+    return raw.slice(raw.indexOf("/img/icons/items/"));
+  }
+  if (raw.startsWith("img/icons/items/")) return `/${raw}`;
+  if (raw.startsWith("../img/icons/items/")) return `/${raw.slice(3)}`;
+  return raw;
+}
+
+function normalizeItemBorderColor(value) {
+  const raw = String(value || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw.toUpperCase() : "";
+}
+
+function readDirectoryEntries(directoryEntry) {
+  return new Promise((resolve, reject) => {
+    const reader = directoryEntry.createReader();
+    const entries = [];
+
+    function readChunk() {
+      reader.readEntries(
+        (chunk) => {
+          if (!chunk.length) {
+            resolve(entries);
+            return;
+          }
+          entries.push(...chunk);
+          readChunk();
+        },
+        (error) => reject(error)
+      );
+    }
+
+    readChunk();
+  });
+}
+
+async function listLocalItemIcons() {
+  if (Array.isArray(localItemIconsCache)) return localItemIconsCache;
+  if (localItemIconsLoading) return [];
+  localItemIconsLoading = true;
+
+  try {
+    const files = [];
+    await new Promise((resolve, reject) => {
+      if (typeof chrome === "undefined" || !chrome.runtime?.getPackageDirectoryEntry) {
+        resolve();
+        return;
+      }
+
+      chrome.runtime.getPackageDirectoryEntry(async (root) => {
+        try {
+          if (!root) {
+            resolve();
+            return;
+          }
+
+          const iconsDir = await new Promise((res, rej) => {
+            root.getDirectory("img/icons/items", {}, res, rej);
+          });
+
+          async function walk(dir, prefix = "") {
+            const entries = await readDirectoryEntries(dir);
+            for (const entry of entries) {
+              if (entry.isDirectory) {
+                await walk(entry, `${prefix}${entry.name}/`);
+                continue;
+              }
+              const relPath = `${prefix}${entry.name}`;
+              if (!/\.(svg|png|jpe?g|webp|ico)$/i.test(relPath)) continue;
+              files.push({
+                name: entry.name,
+                relPath,
+                value: `/img/icons/items/${relPath}`,
+                preview: chrome.runtime.getURL(`img/icons/items/${relPath}`)
+              });
+            }
+          }
+
+          await walk(iconsDir);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    localItemIconsCache = files.sort((a, b) => a.relPath.localeCompare(b.relPath, "ru"));
+    return localItemIconsCache;
+  } catch (error) {
+    console.warn("Cannot list local item icons", error);
+    localItemIconsCache = [];
+    return localItemIconsCache;
+  } finally {
+    localItemIconsLoading = false;
+  }
+}
+
+function ensureItemIconPickerPopover() {
+  let popover = document.getElementById("item-icon-picker-popover");
+  if (popover) return popover;
+
+  popover = document.createElement("div");
+  popover.id = "item-icon-picker-popover";
+  popover.className = "item-icon-picker-popover";
+  popover.hidden = true;
+  popover.innerHTML = '<div class="item-editor__picker" id="item-editor-icon-picker"></div>';
+  document.body.appendChild(popover);
+  return popover;
+}
+
+function closeItemIconPicker() {
+  iconPickerOpen = false;
+  const popover = document.getElementById("item-icon-picker-popover");
+  if (popover) popover.hidden = true;
+}
+
+function positionItemIconPickerPopover(dock, popover) {
+  const dockRect = dock.getBoundingClientRect();
+  const gap = 10;
+  const maxWidth = 220;
+
+  popover.style.maxWidth = `${maxWidth}px`;
+  popover.style.visibility = "hidden";
+  popover.hidden = false;
+
+  const pickerWidth = Math.min(maxWidth, popover.offsetWidth || maxWidth);
+  const pickerHeight = popover.offsetHeight || 220;
+
+  const leftPreferred = dockRect.left - pickerWidth - gap;
+  const left = Math.max(8, leftPreferred);
+  const top = Math.max(8, Math.min(window.innerHeight - pickerHeight - 8, dockRect.top));
+
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+  popover.style.visibility = "visible";
+}
+
+function renderItemIconPicker(state = {}) {
+  const popover = ensureItemIconPickerPopover();
+  const picker = popover.querySelector("#item-editor-icon-picker");
+  if (!picker) return;
+
+  const { loading = false, icons = [], selected = "" } = state;
+  if (loading) {
+    picker.innerHTML = '<div class="item-editor__picker-empty">Загружаем иконки...</div>';
+    return;
+  }
+
+  if (!icons.length) {
+    picker.innerHTML = '<div class="item-editor__picker-empty">Локальные иконки не найдены</div>';
+    return;
+  }
+
+  picker.innerHTML = `
+    <div class="item-editor__picker-grid">
+      ${icons
+        .map((icon) => {
+          const isActive = selected && normalizeLocalIconValue(selected) === icon.value;
+          return `
+            <button
+              class="item-editor__picker-item${isActive ? " item-editor__picker-item--active" : ""}"
+              data-action="choose-local-icon"
+              data-icon-value="${icon.value}"
+              title="${icon.relPath}"
+              type="button"
+            >
+              <img src="${icon.preview}" alt="${icon.name}" loading="lazy" />
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+async function toggleItemIconPicker() {
+  const dock = document.getElementById("item-editor-dock");
+  if (!dock) return;
+
+  const imgInput = dock.querySelector('[data-field="img"]');
+  if (!imgInput) return;
+
+  if (iconPickerOpen) {
+    closeItemIconPicker();
+    return;
+  }
+
+  iconPickerOpen = true;
+  const popover = ensureItemIconPickerPopover();
+  positionItemIconPickerPopover(dock, popover);
+
+  renderItemIconPicker({ loading: true });
+  const icons = await listLocalItemIcons();
+  if (!iconPickerOpen) return;
+  renderItemIconPicker({
+    loading: false,
+    icons,
+    selected: imgInput.value
+  });
+  positionItemIconPickerPopover(dock, popover);
 }
 
 function toCellIndex(row, col) {
@@ -552,7 +763,7 @@ function createHeader() {
             <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
           </svg>
         </button>
-        <div class="speed-test__results">
+        <div class="speed-test__results" hidden>
           <span class="speed-test__country" title="Страна подключения">--</span>
           <span class="speed-test__divider">/</span>
           <span class="speed-test__ping">-- <small>ms</small></span>
@@ -560,10 +771,52 @@ function createHeader() {
           <span class="speed-test__download">-- <small>Mb/s</small></span>
         </div>
       </div>
+      <button class="header__currency-toggle" id="currency-menu-toggle" type="button" title="Конвертер валют" aria-label="Конвертер валют">₽/$</button>
       <button class="header__blackout-btn" id="blackout-toggle-btn" type="button" title="Чёрный экран на весь монитор" aria-label="Чёрный экран"></button>
       <button class="header__menu-toggle" id="drive-menu-toggle" title="Открыть меню синхронизации" aria-label="Открыть меню">
         <span></span><span></span><span></span>
       </button>
+      <div class="currency-menu__overlay" id="currency-menu-overlay"></div>
+      <aside class="currency-menu" id="currency-menu" aria-label="Конвертер валют">
+        <div class="currency-menu__head">Конвертер валют</div>
+        <div class="currency-menu__body">
+          <label class="currency-menu__label">
+            Сумма
+            <input class="currency-menu__input" id="currency-amount" type="number" min="0" step="0.01" value="1000">
+          </label>
+          <div class="currency-menu__row">
+            <div class="currency-select" data-select-kind="from">
+              <button class="currency-select__trigger" id="currency-from-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <span class="currency-select__value" id="currency-from-value">USD</span>
+                <span class="currency-select__caret">▾</span>
+              </button>
+              <div class="currency-select__panel" id="currency-from-panel" hidden>
+                <div class="currency-select__quick" id="currency-from-quick"></div>
+                <div class="currency-select__search-wrap">
+                  <input class="currency-select__search" id="currency-from-search" type="text" placeholder="Найти" autocomplete="off">
+                </div>
+                <div class="currency-select__list" id="currency-from-list" role="listbox" aria-label="Валюта источника"></div>
+              </div>
+            </div>
+            <button class="currency-menu__swap" id="currency-swap" type="button" title="Поменять местами">⇄</button>
+            <div class="currency-select" data-select-kind="to">
+              <button class="currency-select__trigger" id="currency-to-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <span class="currency-select__value" id="currency-to-value">RUB</span>
+                <span class="currency-select__caret">▾</span>
+              </button>
+              <div class="currency-select__panel" id="currency-to-panel" hidden>
+                <div class="currency-select__quick" id="currency-to-quick"></div>
+                <div class="currency-select__search-wrap">
+                  <input class="currency-select__search" id="currency-to-search" type="text" placeholder="Найти" autocomplete="off">
+                </div>
+                <div class="currency-select__list" id="currency-to-list" role="listbox" aria-label="Валюта назначения"></div>
+              </div>
+            </div>
+          </div>
+          <div class="currency-menu__result" id="currency-result">—</div>
+          <div class="currency-menu__meta" id="currency-meta">Загрузка курсов...</div>
+        </div>
+      </aside>
       <div class="drive-menu__overlay" id="drive-menu-overlay"></div>
       <aside class="drive-menu" id="drive-menu" aria-label="Синхронизация Google Drive">
         <div class="drive-menu__head">Google Drive</div>
@@ -593,12 +846,21 @@ function createHeader() {
     menuToggle?.classList.toggle("header__menu-toggle--open", open);
   };
 
+  const currencyConverter = initCurrencyConverter(header, {
+    onOpen: () => setMenuOpen(false)
+  });
+
   menuToggle?.addEventListener("click", () => {
+    currencyConverter.closeMenu();
     setMenuOpen(!menu?.classList.contains("drive-menu--open"));
   });
   menuOverlay?.addEventListener("click", () => setMenuOpen(false));
+
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") setMenuOpen(false);
+    if (event.key === "Escape") {
+      setMenuOpen(false);
+      currencyConverter.closeMenu();
+    }
   });
 
   header
@@ -683,6 +945,13 @@ function initBlackoutOverlay() {
 }
 
 function handleSpeedTest(header) {
+  const resultsEl = header.querySelector(".speed-test__results");
+
+  if (!resultsEl.hidden && !speedTestRunning) {
+    hideSpeedTestResults(resultsEl);
+    return;
+  }
+
   if (speedTestRunning) return;
   speedTestRunning = true;
 
@@ -692,10 +961,11 @@ function handleSpeedTest(header) {
   const downloadEl = header.querySelector(".speed-test__download");
 
   btn.classList.add("speed-test__btn--running");
+  hideSpeedTestResults(resultsEl);
   countryEl.textContent = "--";
   countryEl.title = "Страна подключения";
-  pingEl.innerHTML = '<span class="speed-test__spinner"></span>';
-  downloadEl.innerHTML = '<span class="speed-test__spinner"></span>';
+  pingEl.innerHTML = '-- <small>ms</small>';
+  downloadEl.innerHTML = '-- <small>Mb/s</small>';
 
   runSpeedTest((progress) => {
     if (progress.stage === "country") {
@@ -724,12 +994,26 @@ function handleSpeedTest(header) {
   }).finally(() => {
     speedTestRunning = false;
     btn.classList.remove("speed-test__btn--running");
+    resultsEl.hidden = false;
+    clearTimeout(speedTestResultsTimer);
+    speedTestResultsTimer = setTimeout(() => {
+      hideSpeedTestResults(resultsEl);
+    }, 6000);
   });
+}
+
+function hideSpeedTestResults(resultsEl) {
+  if (speedTestResultsTimer) {
+    clearTimeout(speedTestResultsTimer);
+    speedTestResultsTimer = null;
+  }
+  resultsEl.hidden = true;
 }
 
 function renderItemEditorDock() {
   const existing = document.getElementById("item-editor-dock");
   if (!editMode || !editingItem) {
+    closeItemIconPicker();
     if (existing) existing.remove();
     return;
   }
@@ -738,6 +1022,7 @@ function renderItemEditorDock() {
   const item = categories[editingItem.categoryIndex]?.items?.[editingItem.itemIndex];
   if (!item) {
     editingItem = null;
+    closeItemIconPicker();
     if (existing) existing.remove();
     return;
   }
@@ -750,10 +1035,16 @@ function renderItemEditorDock() {
   dock.innerHTML = `
     <div class="item-editor-dock__title">Редактирование ячейки</div>
     <div class="item-editor-dock__preview">
-      <div class="item-editor-dock__preview-icon">
+      <button class="item-editor-dock__preview-icon" data-action="toggle-icon-picker" title="Выбрать локальную иконку" type="button">
         <img id="item-editor-preview-img" src="${resolveEditorIconPreview(item.img, item.link)}" alt="preview" loading="lazy" />
-      </div>
+      </button>
       <div class="item-editor-dock__preview-text" id="item-editor-preview-text">${item.name || "Новая ссылка"}</div>
+      <div class="item-editor-dock__preview-color">
+        <label class="item-editor__color-label item-editor__color-label--inline" title="Цвет обводки при наведении">
+          <input class="item-editor__color-input" data-field="borderColor" data-custom-value="${normalizeItemBorderColor(item.borderColor) ? "true" : "false"}" type="color" value="${normalizeItemBorderColor(item.borderColor) || "#83C6F9"}">
+        </label>
+        <button class="item-editor__btn item-editor__btn--ghost item-editor__btn--icon" type="button" data-action="reset-border-color" title="Сбросить цвет обводки" aria-label="Сбросить цвет обводки">↺</button>
+      </div>
     </div>
     <div class="item-editor-dock__grid">
       <input class="item-editor__input" data-field="name" placeholder="Название" value="${item.name || ""}">
@@ -774,6 +1065,21 @@ function renderItemEditorDock() {
   `;
 
   if (!existing) document.body.appendChild(dock);
+
+  if (iconPickerOpen) {
+    const popover = ensureItemIconPickerPopover();
+    positionItemIconPickerPopover(dock, popover);
+    renderItemIconPicker({ loading: true });
+    listLocalItemIcons().then((icons) => {
+      const currentDock = document.getElementById("item-editor-dock");
+      const selected = currentDock?.querySelector('[data-field="img"]')?.value || "";
+      if (!currentDock || !iconPickerOpen) return;
+      renderItemIconPicker({ loading: false, icons, selected });
+      positionItemIconPickerPopover(currentDock, popover);
+    });
+  }
+
+  refreshEditorDockPreview();
 }
 
 function refreshEditorDockPreview() {
@@ -783,14 +1089,35 @@ function refreshEditorDockPreview() {
   const name = dock.querySelector('[data-field="name"]')?.value?.trim() || "Новая ссылка";
   const link = dock.querySelector('[data-field="link"]')?.value?.trim() || "https://example.com";
   const img = dock.querySelector('[data-field="img"]')?.value?.trim() || "";
+  const borderInput = dock.querySelector('[data-field="borderColor"]');
+  const borderColor = borderInput?.dataset.customValue === "true"
+    ? normalizeItemBorderColor(borderInput.value)
+    : "";
   const previewImg = dock.querySelector("#item-editor-preview-img");
   const previewText = dock.querySelector("#item-editor-preview-text");
+  const previewWrap = dock.querySelector(".item-editor-dock__preview");
 
   if (previewImg) {
     previewImg.src = resolveEditorIconPreview(img, link);
     previewImg.alt = name;
   }
   if (previewText) previewText.textContent = name;
+  if (previewWrap) {
+    previewWrap.style.setProperty("--item-border-color", borderColor || "rgba(180, 222, 255, 0.16)");
+    previewWrap.classList.toggle("item-editor-dock__preview--custom-border", Boolean(borderColor));
+  }
+
+  if (iconPickerOpen) {
+    renderItemIconPicker({
+      loading: localItemIconsLoading,
+      icons: localItemIconsCache || [],
+      selected: img
+    });
+    const popover = document.getElementById("item-icon-picker-popover");
+    if (popover && !popover.hidden) {
+      positionItemIconPickerPopover(dock, popover);
+    }
+  }
 }
 
 function renderCategories() {
@@ -855,8 +1182,14 @@ function renderCategories() {
       link.dataset.name = item.name;
       link.dataset.categoryIndex = String(catIndex);
       link.dataset.itemIndex = String(itemIndex);
+      link.dataset.size = `${placement.colSpan}x${placement.rowSpan}`;
       link.target = "_self";
       link.innerHTML = `<img src="${item.img || fallbackFavicon(item.link)}" alt="${item.name}" loading="lazy" />`;
+      const borderColor = normalizeItemBorderColor(item.borderColor);
+      if (borderColor) {
+        link.style.setProperty("--item-border-color", borderColor);
+        link.style.setProperty("--item-hover-shadow", `${borderColor}33`);
+      }
 
       wrap.appendChild(link);
 
@@ -915,7 +1248,11 @@ function saveEditedItem(catIndex, itemIndex, editorEl) {
 
   const name = editorEl.querySelector('[data-field="name"]')?.value?.trim();
   const link = editorEl.querySelector('[data-field="link"]')?.value?.trim();
-  const img = editorEl.querySelector('[data-field="img"]')?.value?.trim();
+  const img = normalizeLocalIconValue(editorEl.querySelector('[data-field="img"]')?.value?.trim());
+  const borderInput = editorEl.querySelector('[data-field="borderColor"]');
+  const borderColor = borderInput?.dataset.customValue === "true"
+    ? normalizeItemBorderColor(borderInput.value)
+    : "";
   const selectedSize = editorEl.querySelector('.item-editor__size-btn--active')?.dataset.size || "1x1";
   const [colSpanRaw, rowSpanRaw] = selectedSize.split("x");
   const colSpan = Math.min(2, Math.max(1, Number(colSpanRaw || 1)));
@@ -924,6 +1261,7 @@ function saveEditedItem(catIndex, itemIndex, editorEl) {
   item.name = name || "Новая ссылка";
   item.link = link || "https://";
   item.img = img || "";
+  item.borderColor = borderColor;
   item.colSpan = colSpan;
   item.rowSpan = rowSpan;
   item.wide = colSpan === 2 && rowSpan === 1;
@@ -931,6 +1269,7 @@ function saveEditedItem(catIndex, itemIndex, editorEl) {
   linksState[getModeKey(currentMode)] = sanitizeCategories(categories);
   saveLinksAndSync();
   editingItem = null;
+  closeItemIconPicker();
   renderCategories();
 }
 
@@ -947,10 +1286,15 @@ function applyItemSizeImmediately(catIndex, itemIndex, sizeValue, editorEl) {
   if (editorEl) {
     const name = editorEl.querySelector('[data-field="name"]')?.value?.trim();
     const link = editorEl.querySelector('[data-field="link"]')?.value?.trim();
-    const img = editorEl.querySelector('[data-field="img"]')?.value?.trim();
+    const img = normalizeLocalIconValue(editorEl.querySelector('[data-field="img"]')?.value?.trim());
+    const borderInput = editorEl.querySelector('[data-field="borderColor"]');
+    const borderColor = borderInput?.dataset.customValue === "true"
+      ? normalizeItemBorderColor(borderInput.value)
+      : "";
     item.name = name || item.name || "Новая ссылка";
     item.link = link || item.link || "https://";
     item.img = img || "";
+    item.borderColor = borderColor;
   }
 
   item.colSpan = colSpan;
@@ -1035,6 +1379,7 @@ function attachAppEvents() {
         name: "Новая ссылка",
         link: "https://",
         img: "",
+        borderColor: "",
         gridIndex: firstFree,
         colSpan: 1,
         rowSpan: 1,
@@ -1156,13 +1501,52 @@ function attachAppEvents() {
     if (!editMode) return;
     const dock = document.getElementById("item-editor-dock");
     if (!dock) return;
+    const popover = document.getElementById("item-icon-picker-popover");
 
     const actionEl = event.target.closest("[data-action]");
-    if (!actionEl || !dock.contains(actionEl)) return;
+    const inDock = actionEl && dock.contains(actionEl);
+    const inPopover = actionEl && popover && popover.contains(actionEl);
+
+    if (!inDock && !inPopover) {
+      const clickedInsideDock = dock.contains(event.target);
+      const clickedInsidePopover = popover ? popover.contains(event.target) : false;
+      if (!clickedInsideDock && !clickedInsidePopover) {
+        closeItemIconPicker();
+      }
+      return;
+    }
+
+    if (!actionEl) return;
 
     const action = actionEl.dataset.action;
     const categoryIndex = Number(actionEl.dataset.categoryIndex);
     const itemIndex = actionEl.dataset.itemIndex !== undefined ? Number(actionEl.dataset.itemIndex) : null;
+
+    if (action === "toggle-icon-picker") {
+      toggleItemIconPicker();
+      return;
+    }
+
+    if (action === "choose-local-icon") {
+      const chosen = normalizeLocalIconValue(actionEl.dataset.iconValue);
+      const imgInput = dock.querySelector('[data-field="img"]');
+      if (imgInput) {
+        imgInput.value = chosen;
+        refreshEditorDockPreview();
+      }
+      closeItemIconPicker();
+      return;
+    }
+
+    if (action === "reset-border-color") {
+      const borderInput = dock.querySelector('[data-field="borderColor"]');
+      if (borderInput) {
+        borderInput.value = "#83C6F9";
+        borderInput.dataset.customValue = "false";
+        refreshEditorDockPreview();
+      }
+      return;
+    }
 
     if (action === "save-item") {
       saveEditedItem(categoryIndex, itemIndex, dock);
@@ -1171,6 +1555,7 @@ function attachAppEvents() {
 
     if (action === "cancel-edit-item") {
       editingItem = null;
+      closeItemIconPicker();
       renderCategories();
       return;
     }
@@ -1181,6 +1566,7 @@ function attachAppEvents() {
       linksState[getModeKey(currentMode)] = sanitizeCategories(categories);
       saveLinksAndSync();
       editingItem = null;
+      closeItemIconPicker();
       renderCategories();
       return;
     }
@@ -1195,8 +1581,36 @@ function attachAppEvents() {
     if (!dock) return;
     if (!dock.contains(event.target)) return;
     if (!event.target.closest("[data-field]")) return;
+    if (event.target.matches('[data-field="borderColor"]')) {
+      event.target.dataset.customValue = "true";
+    }
     refreshEditorDockPreview();
   });
+
+  document.addEventListener("focusin", (event) => {
+    const dock = document.getElementById("item-editor-dock");
+    if (!dock) return;
+    if (!dock.contains(event.target)) return;
+    if (event.target.closest('[data-field="name"], [data-field="link"], [data-field="img"]')) {
+      closeItemIconPicker();
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    if (!iconPickerOpen) return;
+    const dock = document.getElementById("item-editor-dock");
+    const popover = document.getElementById("item-icon-picker-popover");
+    if (!dock || !popover || popover.hidden) return;
+    positionItemIconPickerPopover(dock, popover);
+  });
+
+  window.addEventListener("scroll", () => {
+    if (!iconPickerOpen) return;
+    const dock = document.getElementById("item-editor-dock");
+    const popover = document.getElementById("item-icon-picker-popover");
+    if (!dock || !popover || popover.hidden) return;
+    positionItemIconPickerPopover(dock, popover);
+  }, true);
 
   app.addEventListener("input", (event) => {
     if (!editMode) return;
@@ -1227,7 +1641,10 @@ function init() {
 
   const linksNav = createLinksNav();
   const habitsEl = document.getElementById("habits-tracker");
-  if (habitsEl?.parentNode) {
+  const widgetsPanelEl = document.getElementById("widgets-panel");
+  if (widgetsPanelEl?.parentNode) {
+    widgetsPanelEl.parentNode.insertBefore(linksNav, widgetsPanelEl.nextSibling);
+  } else if (habitsEl?.parentNode) {
     habitsEl.parentNode.insertBefore(linksNav, habitsEl.nextSibling);
   }
   linksNavRef = linksNav;

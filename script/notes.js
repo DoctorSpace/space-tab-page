@@ -272,7 +272,6 @@ function openNotesModal() {
       <header class="notes-modal__header">
         <div>
           <h2>Заметки</h2>
-          <p>Слева кратко, справа полностью.</p>
         </div>
         <button class="notes-modal__close" id="notes-modal-close" aria-label="Закрыть">×</button>
       </header>
