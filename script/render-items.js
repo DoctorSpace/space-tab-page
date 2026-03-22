@@ -10,8 +10,9 @@ import {
   sanitizeCategories
 } from "./links-data.js";
 import { hasGoogleIdentityAuth, getGoogleAuthToken, clearCachedGoogleAuthToken } from "./google-auth.js";
-import { loadSpaceTabDataFromDrive, saveSpaceTabDataToDrive } from "./google-drive-data.js";
+import { loadFinanceDataFromDrive, loadSpaceTabDataFromDrive, saveFinanceDataToDrive, saveSpaceTabDataToDrive } from "./google-drive-data.js";
 import { initCurrencyConverter } from "./currency-converter.js";
+import { applyFinanceStateFromSync, getFinanceStateForSync, initFinance, openFinanceModal } from "./finance.js";
 
 const app = document.getElementById("app");
 let currentMode = "default";
@@ -546,20 +547,23 @@ async function syncToDrive({ interactive, notify = false }) {
   try {
     let token = await getGoogleAuthToken(interactive);
     let driveResult = null;
+    let financeDriveResult = null;
     try {
       driveResult = await saveSpaceTabDataToDrive(token, buildDrivePayload());
+      financeDriveResult = await saveFinanceDataToDrive(token, getFinanceStateForSync());
     } catch (error) {
       if (error?.code === "AUTH_EXPIRED" || String(error?.message).includes("AUTH_EXPIRED")) {
         await clearCachedGoogleAuthToken(token);
         token = await getGoogleAuthToken(true);
         driveResult = await saveSpaceTabDataToDrive(token, buildDrivePayload());
+        financeDriveResult = await saveFinanceDataToDrive(token, getFinanceStateForSync());
       } else {
         throw error;
       }
     }
 
     driveConnected = true;
-    console.info("Drive sync success", driveResult);
+    console.info("Drive sync success", driveResult, financeDriveResult);
     setDriveButtonState({ connected: true });
     setRequestStatus("success", "Сохранение в Google Drive завершено");
     if (interactive || notify) {
@@ -588,13 +592,16 @@ async function loadFromDrive({ interactive }) {
     setRequestStatus("loading", "Загружаем данные из Google Drive...");
     let token = await getGoogleAuthToken(interactive);
     let result = null;
+    let financeResult = null;
     try {
       result = await loadSpaceTabDataFromDrive(token);
+      financeResult = await loadFinanceDataFromDrive(token);
     } catch (error) {
       if (error?.code === "AUTH_EXPIRED" || String(error?.message).includes("AUTH_EXPIRED")) {
         await clearCachedGoogleAuthToken(token);
         token = await getGoogleAuthToken(true);
         result = await loadSpaceTabDataFromDrive(token);
+        financeResult = await loadFinanceDataFromDrive(token);
       } else {
         throw error;
       }
@@ -620,9 +627,13 @@ async function loadFromDrive({ interactive }) {
       localStorage.setItem(NOTES_KEY, JSON.stringify(result.data.notes));
       window.dispatchEvent(new CustomEvent("space-tab:notes-restored"));
     }
+    if (financeResult?.data) {
+      applyFinanceStateFromSync(financeResult.data);
+    }
 
     renderCategories();
     initHabits();
+    initFinance();
     setRequestStatus("success", "Загрузка из Google Drive завершена");
     showSyncToast("Файл загружен из Google Drive", "success");
   } catch (error) {
@@ -771,6 +782,7 @@ function createHeader() {
           <span class="speed-test__download">-- <small>Mb/s</small></span>
         </div>
       </div>
+      <button class="header__finance-btn" id="finance-open-btn" type="button" title="Открыть финансы" aria-label="Открыть финансы">Финансы</button>
       <button class="header__currency-toggle" id="currency-menu-toggle" type="button" title="Конвертер валют" aria-label="Конвертер валют">₽/$</button>
       <button class="header__blackout-btn" id="blackout-toggle-btn" type="button" title="Чёрный экран на весь монитор" aria-label="Чёрный экран"></button>
       <button class="header__menu-toggle" id="drive-menu-toggle" title="Открыть меню синхронизации" aria-label="Открыть меню">
@@ -834,6 +846,10 @@ function createHeader() {
 
   header.querySelector("#blackout-toggle-btn")?.addEventListener("click", () => {
     enableBlackout();
+  });
+
+  header.querySelector("#finance-open-btn")?.addEventListener("click", () => {
+    openFinanceModal();
   });
 
   const menu = header.querySelector("#drive-menu");
@@ -1656,6 +1672,7 @@ function init() {
   attachAppEvents();
   renderCategories();
   initHabits();
+  initFinance();
 
   window.addEventListener("space-tab:habits-updated", () => {
     scheduleDriveSync();
