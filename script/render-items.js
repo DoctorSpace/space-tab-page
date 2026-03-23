@@ -11,6 +11,7 @@ import {
 } from "./links-data.js";
 import { hasGoogleIdentityAuth, getGoogleAuthToken, clearCachedGoogleAuthToken } from "./google-auth.js";
 import { loadFinanceDataFromDrive, loadSpaceTabDataFromDrive, saveFinanceDataToDrive, saveSpaceTabDataToDrive } from "./google-drive-data.js";
+import { loadCalendarEvents, loadCalendarList } from "./google-calendar-data.js";
 import { initCurrencyConverter } from "./currency-converter.js";
 import { applyFinanceStateFromSync, getFinanceStateForSync, initFinance, openFinanceModal } from "./finance.js";
 
@@ -37,6 +38,501 @@ const dragState = {
   sourceItemIndex: null
 };
 const NOTES_KEY = "notes_data";
+const CALENDAR_SELECTION_KEY = "google_calendar_selection";
+const CALENDAR_EVENTS_CACHE_KEY = "google_calendar_events_cache";
+const CALENDAR_EVENTS_LIMIT = 18;
+const CALENDAR_PREVIEW_PER_SOURCE = 8;
+let calendarState = {
+  calendars: [],
+  selectedIds: [],
+  events: [],
+  loadingCalendars: false,
+  loadingEvents: false,
+  initialized: false,
+  settingsOpen: false,
+  error: ""
+};
+
+calendarState.selectedIds = loadSavedCalendarSelection();
+
+function loadSavedCalendarSelection() {
+  try {
+    const raw = localStorage.getItem(CALENDAR_SELECTION_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistCalendarSelection(ids) {
+  localStorage.setItem(CALENDAR_SELECTION_KEY, JSON.stringify(ids));
+}
+
+function getTodayStamp() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function buildCalendarSelectionSignature(ids) {
+  return [...ids].sort((a, b) => a.localeCompare(b, "ru", { sensitivity: "base" })).join("|");
+}
+
+function saveCalendarEventsCache(events, selectedIds, selectedCalendars = []) {
+  const payload = {
+    dayStamp: getTodayStamp(),
+    selectionSignature: buildCalendarSelectionSignature(selectedIds),
+    selectedCalendars: selectedCalendars.map((calendar) => ({
+      id: calendar.id,
+      summary: calendar.summary,
+      backgroundColor: calendar.backgroundColor || "#6aa9ff",
+      accessRole: calendar.accessRole || "reader",
+      primary: Boolean(calendar.primary)
+    })),
+    events
+  };
+  localStorage.setItem(CALENDAR_EVENTS_CACHE_KEY, JSON.stringify(payload));
+}
+
+function loadCalendarEventsCachePayload(selectedIds) {
+  try {
+    const raw = localStorage.getItem(CALENDAR_EVENTS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || parsed.dayStamp !== getTodayStamp()) return null;
+    if (parsed.selectionSignature !== buildCalendarSelectionSignature(selectedIds)) return null;
+    if (!Array.isArray(parsed.events)) return null;
+
+    return {
+      selectedCalendars: Array.isArray(parsed.selectedCalendars) ? parsed.selectedCalendars : [],
+      events: parsed.events
+        .map((event) => ({
+          ...event,
+          startDate: new Date(event.startDate)
+        }))
+        .filter((event) => !Number.isNaN(event.startDate.getTime()))
+    };
+  } catch {
+    return null;
+  }
+}
+
+function loadCalendarEventsCache(selectedIds) {
+  return loadCalendarEventsCachePayload(selectedIds)?.events || null;
+}
+
+function resolveSelectedCalendarsMeta() {
+  const selectedCalendars = calendarState.calendars.filter((calendar) => calendarState.selectedIds.includes(calendar.id));
+  if (selectedCalendars.length) return selectedCalendars;
+
+  const cachedPayload = loadCalendarEventsCachePayload(calendarState.selectedIds);
+  if (!cachedPayload?.selectedCalendars?.length) return [];
+  return cachedPayload.selectedCalendars.filter((calendar) => calendarState.selectedIds.includes(calendar.id));
+}
+
+function clearCalendarEventsCache() {
+  localStorage.removeItem(CALENDAR_EVENTS_CACHE_KEY);
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function sortCalendarsByPriority(a, b) {
+  if (a.primary !== b.primary) return a.primary ? -1 : 1;
+  return a.summary.localeCompare(b.summary, "ru", { sensitivity: "base" });
+}
+
+function splitCalendarsByOwnership(calendars) {
+  const mine = [];
+  const other = [];
+
+  calendars.forEach((calendar) => {
+    if (calendar.primary || calendar.accessRole === "owner" || calendar.accessRole === "writer") {
+      mine.push(calendar);
+      return;
+    }
+    other.push(calendar);
+  });
+
+  mine.sort(sortCalendarsByPriority);
+  other.sort(sortCalendarsByPriority);
+  return { mine, other };
+}
+
+function formatEventDateLabel(event) {
+  const startValue = event.start?.dateTime || event.start?.date;
+  if (!startValue) return "Без даты";
+
+  const date = new Date(startValue);
+  if (Number.isNaN(date.getTime())) return "Без даты";
+
+  const day = new Intl.DateTimeFormat("ru-RU", { day: "2-digit" }).format(date);
+  const month = new Intl.DateTimeFormat("ru-RU", { month: "short" }).format(date).replace(".", "");
+  return `${day} ${month}`;
+}
+
+function formatEventTimeLabel(event) {
+  if (event.start?.date && !event.start?.dateTime) return "Весь день";
+
+  const startValue = event.start?.dateTime || event.start?.date;
+  if (!startValue) return "Без времени";
+
+  const date = new Date(startValue);
+  if (Number.isNaN(date.getTime())) return "Без времени";
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function formatRelativeEventLabel(event) {
+  const startValue = event.start?.dateTime || event.start?.date;
+  if (!startValue) return "Без срока";
+
+  const eventDate = new Date(startValue);
+  if (Number.isNaN(eventDate.getTime())) return "Без срока";
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfEventDay = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+  const diffDays = Math.round((startOfEventDay - startOfToday) / 86400000);
+
+  if (diffDays === 0) {
+    if (event.start?.date && !event.start?.dateTime) return "Сегодня";
+
+    const diffMs = Math.max(0, eventDate.getTime() - now.getTime());
+    const hours = Math.floor(diffMs / 3600000);
+    const minutes = Math.floor((diffMs % 3600000) / 60000);
+    if (!hours && !minutes) return "Скоро";
+    if (!hours) return `${minutes} мин`;
+    if (!minutes) return `${hours} ч`;
+    return `${hours} ч ${minutes} мин`;
+  }
+
+  if (diffDays === 1) return "Завтра";
+  if (diffDays > 1 && diffDays < 5) return `Через ${diffDays} дня`;
+  if (diffDays >= 5) return `Через ${diffDays} дней`;
+  return "Сегодня";
+}
+
+function colorToRgbComponents(color) {
+  const value = String(color || "").trim();
+  const hex = value.startsWith("#") ? value.slice(1) : value;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return "106, 169, 255";
+
+  const red = Number.parseInt(hex.slice(0, 2), 16);
+  const green = Number.parseInt(hex.slice(2, 4), 16);
+  const blue = Number.parseInt(hex.slice(4, 6), 16);
+  return `${red}, ${green}, ${blue}`;
+}
+
+function normalizeCalendarEvent(event, calendar) {
+  const startValue = event.start?.dateTime || event.start?.date || "";
+  const startDate = new Date(startValue);
+  const calendarColor = calendar.backgroundColor || "#6aa9ff";
+
+  return {
+    id: `${calendar.id}:${event.id}`,
+    title: event.summary || "Без названия",
+    start: event.start || {},
+    startDate,
+    dateLabel: formatEventDateLabel(event),
+    timeLabel: formatEventTimeLabel(event),
+    relativeLabel: formatRelativeEventLabel(event),
+    location: event.location || "",
+    isAllDay: Boolean(event.start?.date && !event.start?.dateTime),
+    calendarId: calendar.id,
+    calendarName: calendar.summary,
+    calendarColor,
+    calendarColorRgb: colorToRgbComponents(calendarColor)
+  };
+}
+
+function getCalendarMenuBody() {
+  return document.getElementById("calendar-menu-body");
+}
+
+function positionCalendarMenu() {
+  const calendarToggle = headerRef?.querySelector("#calendar-menu-toggle");
+  const calendarMenu = document.getElementById("calendar-menu");
+  if (!calendarToggle || !calendarMenu) return;
+
+  const rect = calendarToggle.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const menuWidth = Math.min(560, Math.max(320, viewportWidth - 16));
+  const gap = 10;
+  const left = Math.max(8, Math.min(viewportWidth - menuWidth - 8, rect.right - menuWidth));
+  const top = rect.bottom + gap;
+
+  calendarMenu.style.width = `${menuWidth}px`;
+  calendarMenu.style.left = `${left}px`;
+  calendarMenu.style.top = `${top}px`;
+}
+
+function updateCalendarButtonState() {
+  const calendarToggle = headerRef?.querySelector("#calendar-menu-toggle");
+  const calendarMenu = document.getElementById("calendar-menu");
+  const calendarOverlay = document.getElementById("calendar-menu-overlay");
+  if (!calendarToggle) return;
+
+  calendarToggle.hidden = !driveConnected;
+
+  if (!driveConnected) {
+    calendarToggle.classList.remove("header__calendar-toggle--open");
+    calendarMenu?.classList.remove("calendar-menu--open");
+    calendarOverlay?.classList.remove("calendar-menu__overlay--open");
+  }
+}
+
+function renderCalendarMenu() {
+  const body = getCalendarMenuBody();
+  if (!body) return;
+
+  const { calendars, selectedIds, events, loadingCalendars, loadingEvents, settingsOpen, error } = calendarState;
+  const fallbackCalendars = selectedIds.length ? resolveSelectedCalendarsMeta() : [];
+  const displayCalendars = calendars.length ? calendars : fallbackCalendars;
+  const hasCalendars = displayCalendars.length > 0;
+  const { mine, other } = splitCalendarsByOwnership(displayCalendars);
+
+  const renderSection = (title, items, emptyText) => {
+    if (!items.length) {
+      return `
+        <section class="calendar-menu__section">
+          <div class="calendar-menu__section-title">${title}</div>
+          <div class="calendar-menu__hint">${emptyText}</div>
+        </section>
+      `;
+    }
+
+    return `
+      <section class="calendar-menu__section">
+        <div class="calendar-menu__section-title">${title}</div>
+        <div class="calendar-menu__options">
+          ${items
+            .map((calendar) => {
+              const checked = selectedIds.includes(calendar.id);
+              return `
+                <label class="calendar-menu__option${checked ? " calendar-menu__option--active" : ""}">
+                  <input class="calendar-menu__checkbox" type="checkbox" data-calendar-id="${escapeHtml(calendar.id)}" ${checked ? "checked" : ""}>
+                  <span class="calendar-menu__check" style="--calendar-color: ${escapeHtml(calendar.backgroundColor || "#6aa9ff")};"></span>
+                  <span class="calendar-menu__text-wrap">
+                    <span class="calendar-menu__option-name">${escapeHtml(calendar.summary)}</span>
+                    <span class="calendar-menu__option-meta">${calendar.primary ? "Основной календарь" : "Google Calendar"}</span>
+                  </span>
+                </label>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>
+    `;
+  };
+
+  const renderEvents = () => {
+    if (!selectedIds.length) {
+      return '<div class="calendar-menu__empty">Выбери один или несколько календарей, и здесь появится список ближайших событий.</div>';
+    }
+
+    if (loadingEvents) {
+      return `
+        <div class="calendar-menu__events calendar-menu__events--loading">
+          ${Array.from({ length: 3 }, () => '<div class="calendar-menu__event-skeleton"></div>').join("")}
+        </div>
+      `;
+    }
+
+    if (!events.length) {
+      if (!hasCalendars) {
+        return '<div class="calendar-menu__empty">Нажми на шестеренку, чтобы загрузить список календарей и выбрать источники событий.</div>';
+      }
+      return '<div class="calendar-menu__empty">В выбранных календарях пока нет ближайших событий.</div>';
+    }
+
+    return `
+      <div class="calendar-menu__events">
+        ${events
+          .map(
+            (event) => `
+              <article class="calendar-menu__event-card" style="--calendar-color: ${escapeHtml(event.calendarColor)}; --calendar-rgb: ${escapeHtml(event.calendarColorRgb)};" data-relative-label="${escapeHtml(event.relativeLabel)}">
+                <div class="calendar-menu__event-side">
+                  <div class="calendar-menu__event-date">${escapeHtml(event.dateLabel)}</div>
+                </div>
+                <div class="calendar-menu__event-main">
+                  <div class="calendar-menu__event-title">${escapeHtml(event.title)}</div>
+                  <div class="calendar-menu__event-meta">
+                    <span>${escapeHtml(event.timeLabel)}</span>
+                    <span class="calendar-menu__event-chip" style="--calendar-color: ${escapeHtml(event.calendarColor)};">${escapeHtml(event.calendarName)}</span>
+                  </div>
+                  ${event.location ? `<div class="calendar-menu__event-location">${escapeHtml(event.location)}</div>` : ""}
+                </div>
+              </article>
+            `
+          )
+          .join("")}
+      </div>
+    `;
+  };
+
+  const renderPicker = () => {
+    if (loadingCalendars) {
+      return '<div class="calendar-menu__hint">Получаем список календарей...</div>';
+    }
+
+    return `
+      <div class="calendar-menu__picker-scroll">
+        ${renderSection("Мои календари", mine, "Нет доступных календарей")}
+        ${renderSection("Другие календари", other, "Подписки и общие календари пока не найдены")}
+      </div>
+    `;
+  };
+
+  body.innerHTML = `
+    <div class="calendar-menu__toolbar">
+      <div class="calendar-menu__toolbar-main">
+        <div>
+          <div class="calendar-menu__title">События</div>
+          <div class="calendar-menu__counter">${selectedIds.length ? `Выбрано календарей: ${selectedIds.length}` : hasCalendars ? "Выбери календари" : "Список календарей не загружен"}</div>
+        </div>
+        <div class="calendar-menu__toolbar-actions">
+          <button class="calendar-menu__icon-btn${settingsOpen ? " calendar-menu__icon-btn--active" : ""}" id="calendar-settings-btn" type="button" aria-label="Настройки календарей" title="Выбрать календари">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.22-1.13.53-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.52a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.41 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.22 1.13-.53 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
+          </button>
+          <button class="calendar-menu__action" id="calendar-refresh-btn" type="button">
+            ${loadingCalendars || loadingEvents ? "Загрузка..." : "Обновить"}
+          </button>
+        </div>
+      </div>
+    </div>
+    ${error ? `<div class="calendar-menu__error">${escapeHtml(error)}</div>` : ""}
+    ${settingsOpen ? `<section class="calendar-menu__picker${loadingCalendars ? " calendar-menu__picker--loading" : ""}">${renderPicker()}</section>` : ""}
+    <section class="calendar-menu__events-block">
+      <div class="calendar-menu__section-title">Ближайшие события</div>
+      ${renderEvents()}
+    </section>
+  `;
+}
+
+async function getGoogleTokenWithRetry(interactive, request) {
+  let token = await getGoogleAuthToken(interactive);
+
+  try {
+    return await request(token);
+  } catch (error) {
+    if (error?.code !== "AUTH_EXPIRED" && !String(error?.message).includes("AUTH_EXPIRED")) {
+      throw error;
+    }
+
+    await clearCachedGoogleAuthToken(token);
+    token = await getGoogleAuthToken(true);
+    return request(token);
+  }
+}
+
+async function refreshCalendarList({ interactive = false } = {}) {
+  if (calendarState.loadingCalendars) return;
+
+  if (!hasGoogleIdentityAuth()) {
+    calendarState.error = "Google auth недоступен";
+    renderCalendarMenu();
+    showSyncToast("Google auth недоступен", "error");
+    return;
+  }
+
+  calendarState.loadingCalendars = true;
+  calendarState.error = "";
+  renderCalendarMenu();
+
+  try {
+    const calendars = await getGoogleTokenWithRetry(interactive, (token) => loadCalendarList(token));
+    driveConnected = true;
+    setDriveButtonState({ connected: true });
+    calendarState.calendars = calendars;
+    calendarState.initialized = true;
+    calendarState.selectedIds = calendarState.selectedIds.filter((id) => calendars.some((calendar) => calendar.id === id));
+    persistCalendarSelection(calendarState.selectedIds);
+    if (!calendarState.selectedIds.length) calendarState.events = [];
+    renderCalendarMenu();
+
+    if (calendarState.selectedIds.length) {
+      const cachedEvents = loadCalendarEventsCache(calendarState.selectedIds);
+      if (cachedEvents) {
+        calendarState.events = cachedEvents;
+        renderCalendarMenu();
+      } else {
+        await refreshCalendarEvents({ interactive: false });
+      }
+    }
+  } catch (error) {
+    console.error("Calendar list load failed", error);
+    calendarState.error = "Не удалось загрузить календари";
+    renderCalendarMenu();
+    showSyncToast("Ошибка загрузки календарей", "error");
+  } finally {
+    calendarState.loadingCalendars = false;
+    renderCalendarMenu();
+  }
+}
+
+async function refreshCalendarEvents({ interactive = false } = {}) {
+  if (calendarState.loadingEvents) return;
+  if (!calendarState.selectedIds.length) {
+    calendarState.events = [];
+    clearCalendarEventsCache();
+    renderCalendarMenu();
+    return;
+  }
+
+  const selectedCalendars = resolveSelectedCalendarsMeta();
+  if (!selectedCalendars.length) {
+    calendarState.events = [];
+    clearCalendarEventsCache();
+    renderCalendarMenu();
+    return;
+  }
+
+  calendarState.loadingEvents = true;
+  calendarState.error = "";
+  renderCalendarMenu();
+
+  try {
+    const events = await getGoogleTokenWithRetry(interactive, async (token) => {
+      const batches = await Promise.all(
+        selectedCalendars.map(async (calendar) => {
+          const items = await loadCalendarEvents(token, calendar.id, { maxResults: CALENDAR_PREVIEW_PER_SOURCE });
+          return items.map((event) => normalizeCalendarEvent(event, calendar));
+        })
+      );
+
+      return batches
+        .flat()
+        .filter((event) => !Number.isNaN(event.startDate.getTime()))
+        .sort((a, b) => a.startDate - b.startDate)
+        .slice(0, CALENDAR_EVENTS_LIMIT);
+    });
+
+    driveConnected = true;
+    setDriveButtonState({ connected: true });
+    calendarState.events = events;
+    saveCalendarEventsCache(events, calendarState.selectedIds, selectedCalendars);
+  } catch (error) {
+    console.error("Calendar events load failed", error);
+    calendarState.error = "Не удалось загрузить события";
+    showSyncToast("Ошибка загрузки событий", "error");
+  } finally {
+    calendarState.loadingEvents = false;
+    renderCalendarMenu();
+  }
+}
 
 function getItemSpan(item) {
   const colSpan = Math.min(2, Math.max(1, Number(item?.colSpan || (item?.wide ? 2 : 1))));
@@ -392,12 +888,14 @@ function setDriveButtonState(state = {}) {
   button.textContent = connected ? "Сохранить" : "Войти";
   if (error) {
     button.title = "Ошибка Google Drive";
+    updateCalendarButtonState();
     return;
   }
 
   button.title = connected
     ? "Google Drive подключен. Нажмите для сохранения"
     : "Войти в Google и сохранить";
+  updateCalendarButtonState();
 }
 
 function createRequestStatusBar() {
@@ -666,7 +1164,13 @@ async function disconnectGoogleDrive() {
   } catch {}
 
   driveConnected = false;
+  calendarState.calendars = [];
+  calendarState.events = [];
+  calendarState.initialized = false;
+  calendarState.error = "";
+  clearCalendarEventsCache();
   setDriveButtonState({ connected: false });
+  renderCalendarMenu();
   setRequestStatus("success", "Вы вышли из Google аккаунта");
   showSyncToast("Вы вышли из Google аккаунта", "success");
 }
@@ -783,6 +1287,7 @@ function createHeader() {
         </div>
       </div>
       <button class="header__finance-btn" id="finance-open-btn" type="button" title="Открыть финансы" aria-label="Открыть финансы">Финансы</button>
+      <button class="header__calendar-toggle" id="calendar-menu-toggle" type="button" title="Google Календарь" aria-label="Google Календарь" hidden>Календарь</button>
       <button class="header__currency-toggle" id="currency-menu-toggle" type="button" title="Конвертер валют" aria-label="Конвертер валют">₽/$</button>
       <button class="header__blackout-btn" id="blackout-toggle-btn" type="button" title="Чёрный экран на весь монитор" aria-label="Чёрный экран"></button>
       <button class="header__menu-toggle" id="drive-menu-toggle" title="Открыть меню синхронизации" aria-label="Открыть меню">
@@ -855,28 +1360,130 @@ function createHeader() {
   const menu = header.querySelector("#drive-menu");
   const menuToggle = header.querySelector("#drive-menu-toggle");
   const menuOverlay = header.querySelector("#drive-menu-overlay");
+  const calendarToggle = header.querySelector("#calendar-menu-toggle");
+  const calendarOverlay = document.createElement("div");
+  calendarOverlay.className = "calendar-menu__overlay";
+  calendarOverlay.id = "calendar-menu-overlay";
 
-  const setMenuOpen = (open) => {
+  const calendarMenu = document.createElement("aside");
+  calendarMenu.className = "calendar-menu";
+  calendarMenu.id = "calendar-menu";
+  calendarMenu.setAttribute("aria-label", "Google Календарь");
+  calendarMenu.innerHTML = `
+    <div class="calendar-menu__head">Google Calendar</div>
+    <div class="calendar-menu__body" id="calendar-menu-body"></div>
+  `;
+
+  document.body.append(calendarOverlay, calendarMenu);
+
+  const setDriveMenuOpen = (open) => {
     menu?.classList.toggle("drive-menu--open", open);
     menuOverlay?.classList.toggle("drive-menu__overlay--open", open);
     menuToggle?.classList.toggle("header__menu-toggle--open", open);
   };
 
+  const setCalendarMenuOpen = (open) => {
+    if (open) positionCalendarMenu();
+    calendarMenu?.classList.toggle("calendar-menu--open", open);
+    calendarOverlay?.classList.toggle("calendar-menu__overlay--open", open);
+    calendarToggle?.classList.toggle("header__calendar-toggle--open", open);
+  };
+
   const currencyConverter = initCurrencyConverter(header, {
-    onOpen: () => setMenuOpen(false)
+    onOpen: () => {
+      setDriveMenuOpen(false);
+      setCalendarMenuOpen(false);
+    }
+  });
+
+  renderCalendarMenu();
+
+  calendarToggle?.addEventListener("click", async () => {
+    if (!driveConnected) return;
+
+    const nextOpen = !calendarMenu?.classList.contains("calendar-menu--open");
+    setDriveMenuOpen(false);
+    currencyConverter.closeMenu();
+    setCalendarMenuOpen(nextOpen);
+
+    if (nextOpen && calendarState.selectedIds.length) {
+      const cachedEvents = loadCalendarEventsCache(calendarState.selectedIds);
+      if (cachedEvents) {
+        calendarState.events = cachedEvents;
+        renderCalendarMenu();
+      } else if (resolveSelectedCalendarsMeta().length) {
+        await refreshCalendarEvents({ interactive: false });
+      }
+    }
   });
 
   menuToggle?.addEventListener("click", () => {
+    setCalendarMenuOpen(false);
     currencyConverter.closeMenu();
-    setMenuOpen(!menu?.classList.contains("drive-menu--open"));
+    setDriveMenuOpen(!menu?.classList.contains("drive-menu--open"));
   });
-  menuOverlay?.addEventListener("click", () => setMenuOpen(false));
+  menuOverlay?.addEventListener("click", () => setDriveMenuOpen(false));
+  calendarOverlay?.addEventListener("click", () => setCalendarMenuOpen(false));
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      setMenuOpen(false);
+      setDriveMenuOpen(false);
+      setCalendarMenuOpen(false);
       currencyConverter.closeMenu();
     }
+  });
+
+  window.addEventListener("resize", () => {
+    if (calendarMenu?.classList.contains("calendar-menu--open")) {
+      positionCalendarMenu();
+    }
+  });
+
+  calendarMenu?.addEventListener("click", (event) => {
+    const refreshBtn = event.target.closest("#calendar-refresh-btn");
+    if (refreshBtn) {
+      if (calendarState.selectedIds.length && resolveSelectedCalendarsMeta().length) {
+        refreshCalendarEvents({ interactive: false });
+      }
+      return;
+    }
+
+    const settingsBtn = event.target.closest("#calendar-settings-btn");
+    if (settingsBtn) {
+      calendarState.settingsOpen = !calendarState.settingsOpen;
+      renderCalendarMenu();
+
+      if (calendarState.settingsOpen && !calendarState.initialized && !calendarState.loadingCalendars) {
+        refreshCalendarList({ interactive: false });
+      }
+    }
+  });
+
+  calendarMenu?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-calendar-id]");
+    if (!checkbox) return;
+
+    const calendarId = checkbox.dataset.calendarId;
+    if (!calendarId) return;
+
+    const selected = new Set(calendarState.selectedIds);
+    if (checkbox.checked) {
+      selected.add(calendarId);
+    } else {
+      selected.delete(calendarId);
+    }
+
+    calendarState.selectedIds = Array.from(selected);
+    persistCalendarSelection(calendarState.selectedIds);
+    const cachedEvents = loadCalendarEventsCache(calendarState.selectedIds);
+    if (cachedEvents) {
+      calendarState.events = cachedEvents;
+      renderCalendarMenu();
+      return;
+    }
+
+    renderCalendarMenu();
+    refreshCalendarEvents({ interactive: false });
   });
 
   header
@@ -884,24 +1491,25 @@ function createHeader() {
     ?.addEventListener("click", async () => {
       if (!driveConnected) {
         await loginGoogle({ interactive: true });
-        setMenuOpen(false);
+        setDriveMenuOpen(false);
         return;
       }
 
       const confirmed = await confirmSaveModal();
       if (!confirmed) return;
       syncToDrive({ interactive: false, notify: true });
-      setMenuOpen(false);
+      setDriveMenuOpen(false);
     });
   header
     .querySelector("#google-drive-load-btn")
     ?.addEventListener("click", () => {
       loadFromDrive({ interactive: !driveConnected });
-      setMenuOpen(false);
+      setDriveMenuOpen(false);
     });
   header.querySelector("#google-drive-logout-btn")?.addEventListener("click", () => {
     disconnectGoogleDrive();
-    setMenuOpen(false);
+    setDriveMenuOpen(false);
+    setCalendarMenuOpen(false);
   });
 
   return header;
