@@ -44,7 +44,8 @@ export function getCategoriesByMode(state, mode) {
 
 export function fallbackFavicon(link) {
   try {
-    const url = new URL(link);
+    const normalized = normalizeLink(link);
+    const url = new URL(normalized === "#" ? "https://example.com" : normalized);
     return `https://www.google.com/s2/favicons?domain=${url.hostname}&sz=64`;
   } catch {
     return "https://www.google.com/s2/favicons?domain=example.com&sz=64";
