@@ -30,6 +30,8 @@ let blackoutActive = false;
 let iconPickerOpen = false;
 let localItemIconsCache = null;
 let localItemIconsLoading = false;
+const itemIconPrewarmCache = new Set();
+const ITEM_ICON_PREWARM_TIMEOUT = 1200;
 const dragState = {
   active: false,
   sourceCategoryIndex: null,
@@ -54,6 +56,38 @@ function getCachedItemIconUrl(iconUrl) {
   if (!/^https?:\/\//i.test(raw)) return raw;
   if (typeof chrome === "undefined" || !chrome.runtime?.getURL) return raw;
   return chrome.runtime.getURL(`_icon-cache/?url=${encodeURIComponent(raw)}`);
+}
+
+function getItemIconSrc(item) {
+  return getCachedItemIconUrl(item.img || fallbackFavicon(item.link));
+}
+
+function isCacheProxyIconUrl(url) {
+  if (typeof chrome === "undefined" || !chrome.runtime?.getURL) return false;
+  return String(url || "").startsWith(chrome.runtime.getURL("_icon-cache/"));
+}
+
+function withTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+async function prewarmCurrentModeIcons() {
+  const iconUrls = getCurrentCategories()
+    .flatMap((category) => category.items || [])
+    .map(getItemIconSrc)
+    .filter((url) => isCacheProxyIconUrl(url) && !itemIconPrewarmCache.has(url));
+
+  const uniqueUrls = [...new Set(iconUrls)];
+  if (!uniqueUrls.length) return;
+
+  uniqueUrls.forEach((url) => itemIconPrewarmCache.add(url));
+  await withTimeout(
+    Promise.allSettled(uniqueUrls.map((url) => fetch(url).catch(() => null))),
+    ITEM_ICON_PREWARM_TIMEOUT
+  );
 }
 
 function normalizeLocalIconValue(value) {
@@ -1191,7 +1225,7 @@ function renderCategories() {
       link.dataset.itemIndex = String(itemIndex);
       link.dataset.size = `${placement.colSpan}x${placement.rowSpan}`;
       link.target = "_self";
-      link.innerHTML = `<img src="${getCachedItemIconUrl(item.img || fallbackFavicon(item.link))}" alt="${item.name}" loading="lazy" />`;
+      link.innerHTML = `<img src="${getItemIconSrc(item)}" alt="${item.name}" loading="eager" decoding="sync" fetchpriority="high" />`;
       const borderColor = normalizeItemBorderColor(item.borderColor);
       if (borderColor) {
         link.style.setProperty("--item-border-color", borderColor);
@@ -1633,7 +1667,7 @@ function attachAppEvents() {
 
 }
 
-function init() {
+async function init() {
   const savedMode = localStorage.getItem("linkMode");
   if (savedMode) currentMode = savedMode;
 
@@ -1661,6 +1695,7 @@ function init() {
   initDriveButtonState();
 
   attachAppEvents();
+  await prewarmCurrentModeIcons();
   renderCategories();
   initHabits();
 
