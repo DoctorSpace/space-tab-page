@@ -259,7 +259,6 @@ function renderWeather(data, forecastData) {
       const nextCity = window.prompt("Введите город", city);
       if (!nextCity || !nextCity.trim()) return;
       const cleanCity = nextCity.trim();
-      saveCity(cleanCity);
       updateWeather(cleanCity);
     });
   }
@@ -401,10 +400,26 @@ function renderLoading() {
   container.innerHTML = `<div class="weather weather--loading">Загрузка погоды...</div>`;
 }
 
-function renderError(message) {
+function promptWeatherCity(currentCity = getSavedCity()) {
+  const nextCity = window.prompt("Введите город", currentCity);
+  if (!nextCity || !nextCity.trim()) return;
+  updateWeather(nextCity.trim());
+}
+
+function renderError(message, city = getSavedCity()) {
   const container = document.getElementById("weather");
   if (!container) return;
-  container.innerHTML = `<div class="weather weather--error">${message}</div>`;
+  container.innerHTML = `
+    <div class="weather weather--error">
+      <div>${message}</div>
+      <button class="weather__city-edit" id="weather-city-edit" title="Изменить город">✎</button>
+    </div>
+  `;
+
+  const cityEditBtn = document.getElementById("weather-city-edit");
+  if (cityEditBtn) {
+    cityEditBtn.addEventListener("click", () => promptWeatherCity(city));
+  }
 }
 
 export async function initWeather(city) {
@@ -415,7 +430,6 @@ export async function initWeather(city) {
   }
 
   const resolvedCity = city || getSavedCity();
-  saveCity(resolvedCity);
 
   const cachedWeather = getCachedWeather(resolvedCity);
   const cachedForecast = getCachedForecast();
@@ -437,6 +451,7 @@ export async function initWeather(city) {
 
   try {
     const data = await fetchWeather(resolvedCity);
+    saveCity(resolvedCity);
     cacheWeather(data, resolvedCity);
     
     let forecastData = null;
@@ -448,14 +463,13 @@ export async function initWeather(city) {
     renderWeather(data, forecastData);
   } catch (error) {
     console.error("Weather error:", error);
-    renderError("Не удалось загрузить погоду");
+    renderError("Не удалось загрузить погоду", resolvedCity);
   }
 }
 
 export function updateWeather(city) {
   localStorage.removeItem(WEATHER_KEY);
   localStorage.removeItem(FORECAST_KEY);
-  if (city) saveCity(city);
   initWeather(city);
 }
 

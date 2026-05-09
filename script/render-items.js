@@ -45,8 +45,15 @@ function getItemSpan(item) {
 
 function resolveEditorIconPreview(imgValue, linkValue) {
   const direct = String(imgValue || "").trim();
-  if (direct) return direct;
-  return fallbackFavicon(linkValue || "https://example.com");
+  if (direct) return getCachedItemIconUrl(direct);
+  return getCachedItemIconUrl(fallbackFavicon(linkValue || "https://example.com"));
+}
+
+function getCachedItemIconUrl(iconUrl) {
+  const raw = String(iconUrl || "").trim();
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  if (typeof chrome === "undefined" || !chrome.runtime?.getURL) return raw;
+  return chrome.runtime.getURL(`_icon-cache/?url=${encodeURIComponent(raw)}`);
 }
 
 function normalizeLocalIconValue(value) {
@@ -1184,7 +1191,7 @@ function renderCategories() {
       link.dataset.itemIndex = String(itemIndex);
       link.dataset.size = `${placement.colSpan}x${placement.rowSpan}`;
       link.target = "_self";
-      link.innerHTML = `<img src="${item.img || fallbackFavicon(item.link)}" alt="${item.name}" loading="lazy" />`;
+      link.innerHTML = `<img src="${getCachedItemIconUrl(item.img || fallbackFavicon(item.link))}" alt="${item.name}" loading="lazy" />`;
       const borderColor = normalizeItemBorderColor(item.borderColor);
       if (borderColor) {
         link.style.setProperty("--item-border-color", borderColor);

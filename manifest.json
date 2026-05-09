@@ -12,7 +12,10 @@
     "48": "./img/icons/extension/48x48.png"
   },
   "permissions": ["activeTab", "identity"],
-  "host_permissions": ["https://www.googleapis.com/*"],
+  "host_permissions": ["https://www.googleapis.com/*", "https://www.google.com/*"],
+  "background": {
+    "service_worker": "script/icon-cache-worker.js"
+  },
   "oauth2": {
     "client_id": "51553271549-87cqjn0ionle7l49t0nlhum9kbrab8jf.apps.googleusercontent.com",
     "scopes": ["https://www.googleapis.com/auth/drive.file"]
