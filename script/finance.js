@@ -28,6 +28,7 @@ const financeState = {
   activeSection: "charts",
   chartCategoryFilter: "all",
   chartAccountFilters: [],
+  chartRange: "all",
   chartWidgetRange: "month",
   draggingAccountId: null,
   editMode: false,
@@ -428,18 +429,12 @@ function getAccountTotals(data) {
   });
 }
 
-function getFinanceSeries(data) {
+function getFinanceSeries(data, range = "all") {
   const filter = financeState.chartCategoryFilter;
   const visibleAccounts = getChartFilteredAccounts(data, financeState.selectedDate);
-  const openingTotal = visibleAccounts.reduce((sum, account) => sum + account.openingBalance, 0);
-  const sortedDates = getSnapshotDates(data);
-  if (!sortedDates.length) {
-    return [{ label: "Старт", value: openingTotal, date: financeState.selectedDate }];
-  }
-
+  const sortedDates = getSnapshotDates(data).filter((date) => date <= financeState.selectedDate);
   const currentByAccount = Object.fromEntries(visibleAccounts.map((account) => [account.id, Number(account.openingBalance) || 0]));
-
-  return sortedDates.map((date) => {
+  const updateAmounts = (date) => {
     Object.entries(getSnapshotsForDate(data, date)).forEach(([accountId, amount]) => {
       const account = data.accounts.find((item) => item.id === accountId);
       if (!account || isAccountArchivedForDate(account, date)) return;
@@ -447,6 +442,8 @@ function getFinanceSeries(data) {
       if (!visibleAccounts.some((item) => item.id === accountId)) return;
       currentByAccount[accountId] = amount;
     });
+  };
+  const buildPoint = (date) => {
     const categories = visibleAccounts.reduce((map, account) => {
       const key = account.category || "Без категории";
       map[key] = (map[key] || 0) + (Number(currentByAccount[account.id]) || 0);
@@ -454,7 +451,36 @@ function getFinanceSeries(data) {
     }, {});
     const total = Object.values(categories).reduce((sum, value) => sum + (Number(value) || 0), 0);
     return { label: date.slice(5), value: total, date, categories };
-  });
+  };
+
+  if (range === "all") {
+    if (!sortedDates.length) return [buildPoint(financeState.selectedDate)];
+    return sortedDates.map((date) => {
+      updateAmounts(date);
+      return buildPoint(date);
+    });
+  }
+
+  const rangeStart = getRangeStartDate(financeState.selectedDate, range);
+  const series = [];
+  sortedDates.filter((date) => date < rangeStart).forEach(updateAmounts);
+
+  if (sortedDates.includes(rangeStart)) {
+    updateAmounts(rangeStart);
+  }
+  series.push(buildPoint(rangeStart));
+
+  sortedDates
+    .filter((date) => date > rangeStart)
+    .forEach((date) => {
+      updateAmounts(date);
+      series.push(buildPoint(date));
+    });
+
+  if (series[series.length - 1].date !== financeState.selectedDate) {
+    series.push(buildPoint(financeState.selectedDate));
+  }
+  return series;
 }
 
 function buildCategoryOptions(data) {
@@ -526,10 +552,14 @@ function getChartFilteredAccounts(data, date = financeState.selectedDate) {
 function getRangeStartDate(date, range) {
   const target = new Date(parseDate(date));
   if (range === "week") target.setDate(target.getDate() - 7);
-  if (range === "month") target.setMonth(target.getMonth() - 1);
-  if (range === "3months") target.setMonth(target.getMonth() - 3);
-  if (range === "6months") target.setMonth(target.getMonth() - 6);
-  if (range === "year") target.setFullYear(target.getFullYear() - 1);
+  const months = { month: 1, "3months": 3, "6months": 6, year: 12 }[range] || 0;
+  if (months) {
+    const day = target.getDate();
+    target.setDate(1);
+    target.setMonth(target.getMonth() - months);
+    const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(day, lastDay));
+  }
   return formatDate(target);
 }
 
@@ -560,7 +590,7 @@ function buildChartMarkup(series, data = loadFinanceData()) {
   const min = Math.min(...values);
   const max = Math.max(...values);
   const padding = Math.max((max - min) * 0.12, Math.max(max * 0.04, 1));
-  const axisMin = Math.max(0, min - padding);
+  const axisMin = min < 0 ? min - padding : Math.max(0, min - padding);
   const axisMax = max + padding;
   const range = axisMax - axisMin || 1;
   const axisSteps = 5;
@@ -569,22 +599,30 @@ function buildChartMarkup(series, data = loadFinanceData()) {
     return axisMin + range * ratio;
   });
   const last = series[series.length - 1];
-  const bars = series
+  const points = series.map((point, index) => ({
+    ...point,
+    x: series.length === 1 ? 500 : (index / (series.length - 1)) * 1000,
+    y: 200 - ((point.value - axisMin) / range) * 200
+  }));
+  let linePath = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const controlX = (previous.x + current.x) / 2;
+    linePath += ` C ${controlX} ${previous.y} ${controlX} ${current.y} ${current.x} ${current.y}`;
+  }
+  const areaPath = `${linePath} L ${points[points.length - 1].x} 200 L ${points[0].x} 200 Z`;
+  const labelCount = Math.min(5, points.length);
+  const labelIndexes = new Set(
+    Array.from({ length: labelCount }, (_, index) =>
+      labelCount === 1 ? 0 : Math.round((index * (points.length - 1)) / (labelCount - 1))
+    )
+  );
+  const pointMarkup = points
     .map((point, index) => {
-      const height = Math.max(8, ((point.value - axisMin) / range) * 100);
       const previousValue = index > 0 ? series[index - 1].value : null;
       const delta = previousValue === null ? 0 : point.value - previousValue;
       const categoryEntries = Object.entries(point.categories || {}).filter(([, value]) => value > 0);
-      const segments = categoryEntries.length
-        ? categoryEntries
-            .map(([category, value], segmentIndex) => {
-              const meta = getCategoryMeta(category);
-              const color = getCategoryColor(data, category);
-              const ratio = point.value > 0 ? (value / point.value) * 100 : 0;
-              return `<i class="finance-chart__bar-segment" style="height:${Math.max(ratio, segmentIndex === categoryEntries.length - 1 ? 6 : 0)}%;--segment-color:${color}"></i>`;
-            })
-            .join("")
-        : '<i class="finance-chart__bar-segment" style="height:100%;--segment-color:#38BDF8"></i>';
       const tooltipCategories = categoryEntries
         .map(([category, value]) => {
           const meta = getCategoryMeta(category);
@@ -593,8 +631,10 @@ function buildChartMarkup(series, data = loadFinanceData()) {
           return `<span class="finance-chart__tooltip-category"><i class="finance-category-badge" style="--category-badge-color:${categoryColor};--category-badge-text:${categoryTextColor}">${meta.icon}</i><b>${escapeHtml(category)}</b><strong>${formatPreciseCurrency(value)}</strong></span>`;
         })
         .join("");
+      const positionClass = points.length === 1 ? "" : index === 0 ? " finance-chart__point-wrap--first" : index === points.length - 1 ? " finance-chart__point-wrap--last" : "";
       return `
-        <div class="finance-chart__bar-wrap">
+        <div class="finance-chart__point-wrap${positionClass}" style="--point-x:${point.x / 10}%;--point-y:${point.y / 2}%">
+          <button class="finance-chart__point" type="button" aria-label="${escapeAttribute(`${formatHumanDate(point.date)}: ${formatPreciseCurrency(point.value)}`)}"></button>
           <div class="finance-chart__tooltip">
             <strong>${formatPreciseCurrency(point.value)}</strong>
             <span>${formatHumanDate(point.date)}</span>
@@ -603,11 +643,16 @@ function buildChartMarkup(series, data = loadFinanceData()) {
             </em>
             ${tooltipCategories ? `<div class="finance-chart__tooltip-categories">${tooltipCategories}</div>` : ""}
           </div>
-          <div class="finance-chart__bar" style="height:${height}%">${segments}</div>
-          <span class="finance-chart__date">${formatShortDate(point.date)}</span>
         </div>
       `;
     })
+    .join("");
+  const dateLabels = points
+    .map((point, index) =>
+      labelIndexes.has(index)
+        ? `<span class="finance-chart__date${points.length === 1 ? "" : index === 0 ? " finance-chart__date--first" : index === points.length - 1 ? " finance-chart__date--last" : ""}" style="--point-x:${point.x / 10}%">${formatShortDate(point.date)}</span>`
+        : ""
+    )
     .join("");
 
   return `
@@ -620,7 +665,20 @@ function buildChartMarkup(series, data = loadFinanceData()) {
           <div class="finance-chart__grid">
             ${axisValues.map(() => '<i></i>').join("")}
           </div>
-          <div class="finance-chart__bars">${bars}</div>
+          <div class="finance-chart__graph">
+            <svg class="finance-chart__area" viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="finance-chart-gradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.34"></stop>
+                  <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0.02"></stop>
+                </linearGradient>
+              </defs>
+              <path class="finance-chart__area-fill" d="${areaPath}"></path>
+              <path class="finance-chart__line" d="${linePath}"></path>
+            </svg>
+            <div class="finance-chart__points">${pointMarkup}</div>
+          </div>
+          <div class="finance-chart__dates">${dateLabels}</div>
         </div>
       </div>
       <div class="finance-chart__meta">
@@ -1223,6 +1281,14 @@ function buildChartsMarkup(data, series, accountTotals) {
   const availableAccounts = getAccountsForDate(data, financeState.selectedDate, { includeArchived: false }).filter(
     (account) => financeState.chartCategoryFilter !== "all" && account.category === financeState.chartCategoryFilter
   );
+  const rangeOptions = [
+    { id: "week", label: "7д" },
+    { id: "month", label: "1м" },
+    { id: "3months", label: "3м" },
+    { id: "6months", label: "6м" },
+    { id: "year", label: "1г" },
+    { id: "all", label: "Всё" }
+  ];
 
   return `
     <section class="finance-card finance-card--chart">
@@ -1231,7 +1297,24 @@ function buildChartsMarkup(data, series, accountTotals) {
           <p class="finance-card__eyebrow">Общая динамика</p>
           <h3>График общего капитала</h3>
         </div>
-        <div class="finance-card__summary">${formatCurrency(series[series.length - 1]?.value || 0)}</div>
+        <div class="finance-chart__head-controls">
+          <div class="finance-chart__periods" role="group" aria-label="Период графика">
+            ${rangeOptions
+              .map(
+                (option) => `
+                  <button
+                    type="button"
+                    class="finance-chart__period${financeState.chartRange === option.id ? " finance-chart__period--active" : ""}"
+                    data-action="finance-chart-range"
+                    data-range="${option.id}"
+                    aria-pressed="${financeState.chartRange === option.id}"
+                  >${option.label}</button>
+                `
+              )
+              .join("")}
+          </div>
+          <div class="finance-card__summary">${formatCurrency(series[series.length - 1]?.value || 0)}</div>
+        </div>
       </div>
       <div class="finance-chart-toolbar">
         ${filterOptions
@@ -1299,7 +1382,7 @@ function renderFinanceModal() {
   const totalBalance = activeAccountTotals.reduce((sum, account) => sum + account.total, 0);
   const totalDelta = activeAccountTotals.reduce((sum, account) => sum + account.delta, 0);
   const snapshotsCount = getSnapshotDates(data).length;
-  const series = getFinanceSeries(data);
+  const series = getFinanceSeries(data, financeState.activeSection === "charts" ? financeState.chartRange : "all");
   const visibleAccounts = activeAccountTotals;
 
   body.innerHTML = `
@@ -1447,6 +1530,15 @@ function handleFinanceModalClick(event) {
     const range = actionEl.dataset.range;
     if (["week", "month", "3months", "6months", "year"].includes(range)) {
       financeState.chartWidgetRange = range;
+      renderFinanceModal();
+    }
+    return;
+  }
+
+  if (action === "finance-chart-range") {
+    const range = actionEl.dataset.range;
+    if (["week", "month", "3months", "6months", "year", "all"].includes(range)) {
+      financeState.chartRange = range;
       renderFinanceModal();
     }
     return;
