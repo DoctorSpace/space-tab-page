@@ -1,6 +1,7 @@
 const DRIVE_FOLDER_NAME = "Space Tab";
 const DRIVE_FILE_NAME = "space-tab.json";
 const FINANCE_FILE_NAME = "finance.json";
+const BODY_METRICS_FILE_NAME = "body-metrics.json";
 
 function buildMultipartBody(metadata, jsonData) {
   const boundary = `space-tab-${Date.now()}`;
@@ -137,6 +138,10 @@ export async function saveFinanceDataToDrive(token, payloadData) {
   return saveNamedDataToDrive(token, FINANCE_FILE_NAME, payloadData);
 }
 
+export async function saveBodyMetricsDataToDrive(token, payloadData) {
+  return saveNamedDataToDrive(token, BODY_METRICS_FILE_NAME, payloadData);
+}
+
 async function saveNamedDataToDrive(token, fileName, payloadData) {
   const payload = {
     updatedAt: new Date().toISOString(),
@@ -171,6 +176,10 @@ export async function loadSpaceTabDataFromDrive(token) {
 
 export async function loadFinanceDataFromDrive(token) {
   return loadNamedDataFromDrive(token, FINANCE_FILE_NAME);
+}
+
+export async function loadBodyMetricsDataFromDrive(token) {
+  return loadNamedDataFromDrive(token, BODY_METRICS_FILE_NAME);
 }
 
 async function loadNamedDataFromDrive(token, fileName) {

@@ -1075,8 +1075,10 @@ body {
   width: calc(100% - 64px);
   margin: 24px auto 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: flex-start;
+  gap: 16px;
 }
 
 .links-nav__modes {

@@ -10,10 +10,22 @@ import {
   sanitizeCategories
 } from "./links-data.js";
 import { hasGoogleIdentityAuth, getGoogleAuthToken, clearCachedGoogleAuthToken } from "./google-auth.js";
-import { loadFinanceDataFromDrive, loadSpaceTabDataFromDrive, saveFinanceDataToDrive, saveSpaceTabDataToDrive } from "./google-drive-data.js";
+import {
+  loadBodyMetricsDataFromDrive,
+  loadFinanceDataFromDrive,
+  loadSpaceTabDataFromDrive,
+  saveBodyMetricsDataToDrive,
+  saveFinanceDataToDrive,
+  saveSpaceTabDataToDrive
+} from "./google-drive-data.js";
 import { loadCalendarEvents, loadCalendarList } from "./google-calendar-data.js";
 import { initCurrencyConverter } from "./currency-converter.js";
 import { applyFinanceStateFromSync, getFinanceStateForSync, initFinance, openFinanceModal } from "./finance.js";
+import {
+  applyBodyMetricsStateFromSync,
+  getBodyMetricsStateForSync,
+  initBodyMetrics
+} from "./body-metrics.js";
 
 const app = document.getElementById("app");
 let currentMode = "default";
@@ -1046,22 +1058,25 @@ async function syncToDrive({ interactive, notify = false }) {
     let token = await getGoogleAuthToken(interactive);
     let driveResult = null;
     let financeDriveResult = null;
+    let bodyMetricsDriveResult = null;
     try {
       driveResult = await saveSpaceTabDataToDrive(token, buildDrivePayload());
       financeDriveResult = await saveFinanceDataToDrive(token, getFinanceStateForSync());
+      bodyMetricsDriveResult = await saveBodyMetricsDataToDrive(token, getBodyMetricsStateForSync());
     } catch (error) {
       if (error?.code === "AUTH_EXPIRED" || String(error?.message).includes("AUTH_EXPIRED")) {
         await clearCachedGoogleAuthToken(token);
         token = await getGoogleAuthToken(true);
         driveResult = await saveSpaceTabDataToDrive(token, buildDrivePayload());
         financeDriveResult = await saveFinanceDataToDrive(token, getFinanceStateForSync());
+        bodyMetricsDriveResult = await saveBodyMetricsDataToDrive(token, getBodyMetricsStateForSync());
       } else {
         throw error;
       }
     }
 
     driveConnected = true;
-    console.info("Drive sync success", driveResult, financeDriveResult);
+    console.info("Drive sync success", driveResult, financeDriveResult, bodyMetricsDriveResult);
     setDriveButtonState({ connected: true });
     setRequestStatus("success", "Сохранение в Google Drive завершено");
     if (interactive || notify) {
@@ -1091,15 +1106,18 @@ async function loadFromDrive({ interactive }) {
     let token = await getGoogleAuthToken(interactive);
     let result = null;
     let financeResult = null;
+    let bodyMetricsResult = null;
     try {
       result = await loadSpaceTabDataFromDrive(token);
       financeResult = await loadFinanceDataFromDrive(token);
+      bodyMetricsResult = await loadBodyMetricsDataFromDrive(token);
     } catch (error) {
       if (error?.code === "AUTH_EXPIRED" || String(error?.message).includes("AUTH_EXPIRED")) {
         await clearCachedGoogleAuthToken(token);
         token = await getGoogleAuthToken(true);
         result = await loadSpaceTabDataFromDrive(token);
         financeResult = await loadFinanceDataFromDrive(token);
+        bodyMetricsResult = await loadBodyMetricsDataFromDrive(token);
       } else {
         throw error;
       }
@@ -1125,12 +1143,18 @@ async function loadFromDrive({ interactive }) {
       localStorage.setItem(NOTES_KEY, JSON.stringify(result.data.notes));
       window.dispatchEvent(new CustomEvent("space-tab:notes-restored"));
     }
+    if (bodyMetricsResult?.data) {
+      applyBodyMetricsStateFromSync(bodyMetricsResult.data);
+    } else if (result.data.bodyMetrics) {
+      applyBodyMetricsStateFromSync(result.data.bodyMetrics);
+    }
     if (financeResult?.data) {
       applyFinanceStateFromSync(financeResult.data);
     }
 
     renderCategories();
     initHabits();
+    initBodyMetrics();
     initFinance();
     setRequestStatus("success", "Загрузка из Google Drive завершена");
     showSyncToast("Файл загружен из Google Drive", "success");
@@ -2280,6 +2304,7 @@ function init() {
   attachAppEvents();
   renderCategories();
   initHabits();
+  initBodyMetrics();
   initFinance();
 
   window.addEventListener("space-tab:habits-updated", () => {
@@ -2287,6 +2312,10 @@ function init() {
   });
 
   window.addEventListener("space-tab:notes-updated", () => {
+    scheduleDriveSync();
+  });
+
+  window.addEventListener("space-tab:body-metrics-updated", () => {
     scheduleDriveSync();
   });
 }
