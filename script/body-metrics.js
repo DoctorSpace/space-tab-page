@@ -16,6 +16,7 @@ const state = {
   range: 12,
   editingDate: "",
   pendingDeleteDate: "",
+  goalMessage: "",
   message: ""
 };
 
@@ -64,7 +65,12 @@ function normalizeData(data) {
   });
 
   return {
-    version: 2,
+    version: 3,
+    goals: {
+      weight: normalizeMetric(data?.goals?.weight, 20, 500, 2),
+      waist: normalizeMetric(data?.goals?.waist, 30, 300),
+      fat: normalizeMetric(data?.goals?.fat, 1, 75)
+    },
     entries: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
   };
 }
@@ -121,6 +127,17 @@ function getLatestMetric(data, key) {
     latest,
     delta: latest && previous ? Math.round((latest.value - previous.value) * precision) / precision : null
   };
+}
+
+function getGoalProgress(data, key) {
+  const goal = data.goals[key];
+  const series = getMetricSeries(data, key);
+  if (goal === null || !series.length) return null;
+
+  const start = series[0].value;
+  const current = series.at(-1).value;
+  if (start <= goal) return current <= goal ? 100 : 0;
+  return Math.max(0, Math.min(100, Math.round(((start - current) / (start - goal)) * 100)));
 }
 
 function buildDelta(delta, unit, fractionDigits = 1) {
@@ -205,7 +222,35 @@ function saveEntry(date, weightValue, waistValue, fatValue, { replace = false, p
   return { ok: true };
 }
 
-function buildWidgetMetric(label, metric, unit, modifier) {
+function saveGoals(weightValue, waistValue, fatValue) {
+  const rawWeight = String(weightValue || "").trim();
+  const rawWaist = String(waistValue || "").trim();
+  const rawFat = String(fatValue || "").trim();
+  const goals = {
+    weight: normalizeMetric(rawWeight, 20, 500, 2),
+    waist: normalizeMetric(rawWaist, 30, 300),
+    fat: normalizeMetric(rawFat, 1, 75)
+  };
+
+  if (rawWeight && goals.weight === null) return { ok: false, message: "Цель по весу должна быть от 20 до 500 кг" };
+  if (rawWaist && goals.waist === null) return { ok: false, message: "Цель по талии должна быть от 30 до 300 см" };
+  if (rawFat && goals.fat === null) return { ok: false, message: "Цель по жиру должна быть от 1 до 75%" };
+
+  const data = loadData();
+  for (const key of ["weight", "waist", "fat"]) {
+    const latest = getLatestMetric(data, key).latest;
+    if (goals[key] !== null && latest && goals[key] >= latest.value) {
+      const label = { weight: "весу", waist: "талии", fat: "проценту жира" }[key];
+      return { ok: false, message: `Цель по ${label} должна быть ниже текущего значения` };
+    }
+  }
+
+  data.goals = goals;
+  saveData(data);
+  return { ok: true, message: "Цели сохранены" };
+}
+
+function buildWidgetMetric(label, metric, unit, modifier, goal, goalProgress) {
   const fractionDigits = modifier === "weight" ? 2 : 1;
   return `
     <div class="body-metrics__metric body-metrics__metric--${modifier}">
@@ -215,6 +260,11 @@ function buildWidgetMetric(label, metric, unit, modifier) {
         <span>${unit}</span>
       </div>
       ${buildDelta(metric.delta, unit, fractionDigits)}
+      <div class="body-metrics__goal${goal !== null ? " body-metrics__goal--active" : ""}">
+        <span>${goal !== null ? `Цель: ${formatValue(goal, fractionDigits)} ${unit}` : "Цель не задана"}</span>
+        ${goalProgress !== null ? `<b>${goalProgress}%</b>` : ""}
+      </div>
+      ${goalProgress !== null ? `<div class="body-metrics__goal-track"><i style="width:${goalProgress}%"></i></div>` : ""}
     </div>
   `;
 }
@@ -246,9 +296,9 @@ function renderWidget() {
 
     ${collapsed ? "" : `
       <div class="body-metrics__metrics">
-        ${buildWidgetMetric("Вес", weight, "кг", "weight")}
-        ${buildWidgetMetric("Талия", waist, "см", "waist")}
-        ${buildWidgetMetric("Жир", fat, "%", "fat")}
+        ${buildWidgetMetric("Вес", weight, "кг", "weight", data.goals.weight, getGoalProgress(data, "weight"))}
+        ${buildWidgetMetric("Талия", waist, "см", "waist", data.goals.waist, getGoalProgress(data, "waist"))}
+        ${buildWidgetMetric("Жир", fat, "%", "fat", data.goals.fat, getGoalProgress(data, "fat"))}
       </div>
 
       <form class="body-metrics__quick-form" id="body-metrics-quick-form">
@@ -416,6 +466,19 @@ function renderModal() {
       </div>
     </div>
 
+    <section class="body-metrics-goals">
+      <div class="body-metrics-section-head">
+        <div><span>Целевые значения</span><h3>Цели для снижения</h3></div>
+      </div>
+      <form class="body-metrics-goals__form" id="body-metrics-goals-form">
+        <label><span>Вес, кг</span><input name="weight" type="text" inputmode="decimal" autocomplete="off" value="${data.goals.weight ?? ""}" placeholder="70.00"></label>
+        <label><span>Талия, см</span><input name="waist" type="number" min="30" max="300" step="0.1" inputmode="decimal" value="${data.goals.waist ?? ""}" placeholder="80.0"></label>
+        <label><span>Жир, %</span><input name="fat" type="number" min="1" max="75" step="0.1" inputmode="decimal" value="${data.goals.fat ?? ""}" placeholder="15.0"></label>
+        <button type="submit">Сохранить цели</button>
+      </form>
+      <div class="body-metrics-goals__message${state.goalMessage ? " is-visible" : ""}" aria-live="polite">${state.goalMessage || "Оставьте поле пустым, чтобы убрать цель."}</div>
+    </section>
+
     <div class="body-metrics-charts">
       ${buildChartCard(data, "weight", "Вес", "кг", "#ffad42")}
       ${buildChartCard(data, "waist", "Талия", "см", "#54d6c5")}
@@ -474,6 +537,7 @@ function openModal() {
   previousFocus = document.activeElement;
   state.editingDate = "";
   state.pendingDeleteDate = "";
+  state.goalMessage = "";
   state.message = "";
   renderModal();
   modal.classList.add("body-metrics-modal--open");
@@ -490,6 +554,7 @@ function closeModal() {
   document.body.style.overflow = "";
   state.editingDate = "";
   state.pendingDeleteDate = "";
+  state.goalMessage = "";
   state.message = "";
   const focusTarget = previousFocus?.isConnected
     ? previousFocus
@@ -548,6 +613,18 @@ function handleModalClick(event) {
 }
 
 function handleModalSubmit(event) {
+  if (event.target.id === "body-metrics-goals-form") {
+    event.preventDefault();
+    const formData = new FormData(event.target);
+    const result = saveGoals(
+      formData.get("weight"),
+      formData.get("waist"),
+      formData.get("fat")
+    );
+    state.goalMessage = result.message;
+    renderAll();
+    return;
+  }
   if (event.target.id !== "body-metrics-entry-form") return;
   event.preventDefault();
   const formData = new FormData(event.target);
