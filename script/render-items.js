@@ -50,6 +50,8 @@ const dragState = {
   sourceItemIndex: null
 };
 const NOTES_KEY = "notes_data";
+const NOTES_GROUPS_KEY = "notes_groups_v1";
+const NOTES_GROUP_ORDER_KEY = "notes_group_order_v1";
 const CALENDAR_SELECTION_KEY = "google_calendar_selection";
 const CALENDAR_EVENTS_CACHE_KEY = "google_calendar_events_cache";
 const CALENDAR_EVENTS_LIMIT = 18;
@@ -857,7 +859,28 @@ function getHabitsState() {
 function getNotesState() {
   try {
     const raw = localStorage.getItem(NOTES_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const notes = raw ? JSON.parse(raw) : [];
+    return Array.isArray(notes) ? notes : [];
+  } catch {
+    return [];
+  }
+}
+
+function getNoteGroupsState() {
+  try {
+    const raw = localStorage.getItem(NOTES_GROUPS_KEY);
+    const groups = raw ? JSON.parse(raw) : [];
+    return Array.isArray(groups) ? groups : [];
+  } catch {
+    return [];
+  }
+}
+
+function getNoteGroupOrderState() {
+  try {
+    const raw = localStorage.getItem(NOTES_GROUP_ORDER_KEY);
+    const order = raw ? JSON.parse(raw) : [];
+    return Array.isArray(order) ? order : [];
   } catch {
     return [];
   }
@@ -867,7 +890,9 @@ function buildDrivePayload() {
   return {
     links: linksState,
     habits: getHabitsState(),
-    notes: getNotesState()
+    notes: getNotesState(),
+    noteGroups: getNoteGroupsState(),
+    noteGroupOrder: getNoteGroupOrderState()
   };
 }
 
@@ -1131,6 +1156,7 @@ async function loadFromDrive({ interactive }) {
       return;
     }
 
+    let notesRestoreSkipped = false;
     if (result.data.links) {
       linksState = result.data.links;
       saveLinksState(linksState);
@@ -1139,9 +1165,28 @@ async function loadFromDrive({ interactive }) {
       localStorage.setItem(HABITS_KEY, JSON.stringify(result.data.habits));
       window.dispatchEvent(new CustomEvent("space-tab:habits-updated"));
     }
-    if (result.data.notes) {
-      localStorage.setItem(NOTES_KEY, JSON.stringify(result.data.notes));
-      window.dispatchEvent(new CustomEvent("space-tab:notes-restored"));
+    if (Array.isArray(result.data.notes)) {
+      const beforeNotesRestore = new CustomEvent("space-tab:before-notes-restore", {
+        detail: { confirmation: null }
+      });
+      window.dispatchEvent(beforeNotesRestore);
+      const canRestoreNotes = await (beforeNotesRestore.detail.confirmation ?? true);
+      if (canRestoreNotes) {
+        localStorage.setItem(NOTES_KEY, JSON.stringify(result.data.notes));
+        if (Array.isArray(result.data.noteGroups)) {
+          localStorage.setItem(NOTES_GROUPS_KEY, JSON.stringify(result.data.noteGroups));
+        } else {
+          localStorage.removeItem(NOTES_GROUPS_KEY);
+        }
+        if (Array.isArray(result.data.noteGroupOrder)) {
+          localStorage.setItem(NOTES_GROUP_ORDER_KEY, JSON.stringify(result.data.noteGroupOrder));
+        } else {
+          localStorage.removeItem(NOTES_GROUP_ORDER_KEY);
+        }
+        window.dispatchEvent(new CustomEvent("space-tab:notes-restored"));
+      } else {
+        notesRestoreSkipped = true;
+      }
     }
     if (bodyMetricsResult?.data) {
       applyBodyMetricsStateFromSync(bodyMetricsResult.data);
@@ -1157,7 +1202,10 @@ async function loadFromDrive({ interactive }) {
     initBodyMetrics();
     initFinance();
     setRequestStatus("success", "Загрузка из Google Drive завершена");
-    showSyncToast("Файл загружен из Google Drive", "success");
+    showSyncToast(
+      notesRestoreSkipped ? "Данные загружены, открытая заметка оставлена без изменений" : "Файл загружен из Google Drive",
+      "success"
+    );
   } catch (error) {
     console.error("Drive load failed", error);
     setRequestStatus("error", "Ошибка загрузки из Google Drive");
