@@ -2,7 +2,6 @@ const NOTES_KEY = "notes_data";
 const NOTES_GROUPS_KEY = "notes_groups_v1";
 const NOTES_GROUP_ORDER_KEY = "notes_group_order_v1";
 const ALL_GROUPS_ID = "__all__";
-const UNGROUPED_ID = "__ungrouped__";
 const COMPLETED_ID = "__completed__";
 
 const modalState = {
@@ -14,6 +13,7 @@ const modalState = {
   draftText: "",
   draftGroupId: "",
   draftDueDate: "",
+  isManagingGroups: false,
   isAddingGroup: false,
   groupNameDraft: "",
   expandedCompletedGroups: new Set(),
@@ -73,7 +73,7 @@ function getGroups() {
     return groups.filter((group) => {
       const id = String(group?.id || "").trim();
       const name = String(group?.name || "").trim();
-      if (!id || !name || id === ALL_GROUPS_ID || id === UNGROUPED_ID || id === COMPLETED_ID || seenIds.has(id)) return false;
+      if (!id || !name || id === ALL_GROUPS_ID || id === COMPLETED_ID || seenIds.has(id)) return false;
       seenIds.add(id);
       return true;
     });
@@ -83,7 +83,7 @@ function getGroups() {
 }
 
 function getGroupOrder(groups = getGroups()) {
-  const defaultOrder = [ALL_GROUPS_ID, COMPLETED_ID, UNGROUPED_ID, ...groups.map((group) => String(group.id))];
+  const defaultOrder = [ALL_GROUPS_ID, COMPLETED_ID, ...groups.map((group) => String(group.id))];
   try {
     const data = localStorage.getItem(NOTES_GROUP_ORDER_KEY);
     const savedOrder = data ? JSON.parse(data) : [];
@@ -238,9 +238,6 @@ function getNoteGroupId(note, groups) {
 function getFilteredNotes(notes, groups) {
   if (modalState.selectedGroupId === ALL_GROUPS_ID) return notes;
   if (modalState.selectedGroupId === COMPLETED_ID) return notes.filter((note) => note.done);
-  if (modalState.selectedGroupId === UNGROUPED_ID) {
-    return notes.filter((note) => !getNoteGroupId(note, groups));
-  }
   return notes.filter((note) => getNoteGroupId(note, groups) === modalState.selectedGroupId);
 }
 
@@ -268,7 +265,7 @@ function hasUnsavedDraft() {
   return Boolean(modalState.isAddingGroup && modalState.groupNameDraft.trim()) || hasUnsavedNoteDraft();
 }
 
-function showNotesConfirm({ title, message, confirmLabel = "Продолжить", danger = false }) {
+function showNotesConfirm({ title, message, confirmLabel = "Продолжить", discardLabel = "", danger = false, success = false }) {
   if (document.getElementById("notes-confirm")) return Promise.resolve(false);
 
   return new Promise((resolve) => {
@@ -285,7 +282,8 @@ function showNotesConfirm({ title, message, confirmLabel = "Продолжить
         <p id="notes-confirm-message">${escapeHtml(message)}</p>
         <div class="notes-confirm__actions">
           <button class="notes-confirm__btn" data-confirm-action="cancel">Отмена</button>
-          <button class="notes-confirm__btn notes-confirm__btn--confirm ${danger ? "notes-confirm__btn--danger" : ""}" data-confirm-action="confirm">${escapeHtml(confirmLabel)}</button>
+          <button class="notes-confirm__btn notes-confirm__btn--confirm ${danger ? "notes-confirm__btn--danger" : success ? "notes-confirm__btn--success" : ""}" data-confirm-action="confirm">${escapeHtml(confirmLabel)}</button>
+          ${discardLabel ? `<button class="notes-confirm__btn notes-confirm__btn--danger notes-confirm__btn--discard" data-confirm-action="discard">${escapeHtml(discardLabel)}</button>` : ""}
         </div>
       </section>
     `;
@@ -323,6 +321,7 @@ function showNotesConfirm({ title, message, confirmLabel = "Продолжить
       const action = event.target.closest("[data-confirm-action]")?.dataset.confirmAction;
       if (action === "cancel") close(false);
       if (action === "confirm") close(true);
+      if (action === "discard") close("discard");
     });
     document.addEventListener("keydown", keyHandler, true);
     document.body.appendChild(confirmModal);
@@ -334,15 +333,21 @@ async function canDiscardDraft() {
   if (!hasUnsavedDraft()) return true;
   const hasGroupDraft = Boolean(modalState.isAddingGroup && modalState.groupNameDraft.trim());
   const hasNoteDraft = hasUnsavedNoteDraft();
-  return showNotesConfirm({
-    title: "Несохраненные изменения",
+  const decision = await showNotesConfirm({
+    title: "Сохранить изменения?",
     message: hasGroupDraft && hasNoteDraft
-      ? "Изменения в карточке и название новой группы не сохранены. Продолжить без сохранения?"
+      ? "Изменения в карточке и новая группа ещё не сохранены. Сохраните их перед следующим действием или продолжите без сохранения."
       : hasGroupDraft
-        ? "Название новой группы не сохранено. Продолжить без сохранения?"
-        : "Изменения в карточке не сохранены. Продолжить без сохранения?",
-    confirmLabel: "Продолжить"
+        ? "Новая группа ещё не сохранена. Сохраните её перед следующим действием или продолжите без сохранения."
+        : "Изменения в карточке ещё не сохранены. Сохраните их перед следующим действием или продолжите без сохранения.",
+    confirmLabel: "Сохранить",
+    discardLabel: "Не сохранять изменения"
   });
+  if (!decision) return false;
+  if (decision === "discard") return true;
+  if (hasGroupDraft) addGroup();
+  if (hasNoteDraft || hasUnsavedNoteDraft()) addOrUpdateNote();
+  return true;
 }
 
 function getSafeLinkHref(value) {
@@ -653,7 +658,8 @@ function renderGroupSwitcher(notes, groups) {
   const groupButton = (id, name, count, canDelete = false, attentionCount = 0, tomorrowCount = 0) => {
     const isActive = modalState.selectedGroupId === id;
     const activeClass = isActive ? "notes-groups__item--active" : "";
-    const deletableClass = canDelete && isActive ? "notes-groups__item--deletable" : "";
+    const canDeleteActiveGroup = modalState.isManagingGroups && canDelete && isActive;
+    const deletableClass = canDeleteActiveGroup ? "notes-groups__item--deletable" : "";
     return `
       <div class="notes-groups__item ${activeClass} ${deletableClass}" draggable="true" data-group-order-id="${escapeHtml(id)}">
         <button class="notes-groups__select" data-action="select-group" data-group-id="${escapeHtml(id)}">
@@ -664,22 +670,19 @@ function renderGroupSwitcher(notes, groups) {
             ${tomorrowCount > 0 ? `<span class="notes-groups__tomorrow" title="Срок завтра">${tomorrowCount}</span>` : ""}
           </span>
         </button>
-        ${canDelete && isActive ? `<button class="notes-groups__delete" data-action="delete-group" data-group-id="${escapeHtml(id)}" aria-label="Удалить группу ${escapeHtml(name)}" title="Удалить группу">×</button>` : ""}
+        ${canDeleteActiveGroup ? `<button class="notes-groups__delete" data-action="delete-group" data-group-id="${escapeHtml(id)}" aria-label="Удалить группу ${escapeHtml(name)}" title="Удалить группу">×</button>` : ""}
       </div>
     `;
   };
 
-  const ungroupedCount = notes.filter((note) => !getNoteGroupId(note, groups)).length;
   const attentionNotes = notes.filter((note) => requiresAttention(note));
   const tomorrowDate = getTomorrowDateKey();
   const tomorrowNotes = notes.filter((note) => !note.done && normalizeDueDate(note.dueDate) === tomorrowDate);
-  const ungroupedAttentionCount = attentionNotes.filter((note) => !getNoteGroupId(note, groups)).length;
   const groupById = new Map(groups.map((group) => [String(group.id), group]));
   const orderedGroupItems = getGroupOrder(groups)
     .map((id) => {
       if (id === ALL_GROUPS_ID) return groupButton(id, "Все", notes.length);
       if (id === COMPLETED_ID) return groupButton(id, "Выполненные", notes.filter((note) => note.done).length);
-      if (id === UNGROUPED_ID) return groupButton(id, "Без группы", ungroupedCount, false, ungroupedAttentionCount);
       const group = groupById.get(id);
       if (!group) return "";
       const count = notes.filter((note) => getNoteGroupId(note, groups) === id).length;
@@ -692,14 +695,21 @@ function renderGroupSwitcher(notes, groups) {
   return `
     <div class="notes-groups__list">
       ${orderedGroupItems}
-      <button class="notes-groups__add-toggle" data-action="toggle-group-form" aria-label="Добавить группу" title="Добавить группу">+ Группа</button>
-      ${modalState.isAddingGroup ? `
+      ${modalState.isManagingGroups ? `<button class="notes-groups__add-toggle" data-action="toggle-group-form" aria-label="Добавить группу" title="Добавить группу">+ Группа</button>` : ""}
+      ${modalState.isManagingGroups && modalState.isAddingGroup ? `
         <div class="notes-groups__form">
           <input id="notes-group-name" maxlength="48" placeholder="Название группы" value="${escapeHtml(modalState.groupNameDraft)}" />
           <button data-action="add-group" aria-label="Сохранить группу" title="Сохранить">✓</button>
         </div>
       ` : ""}
     </div>
+    <button class="notes-groups__settings ${modalState.isManagingGroups ? "notes-groups__settings--active" : ""}" data-action="toggle-group-settings" aria-label="Настройки групп" title="Настройки групп" aria-pressed="${modalState.isManagingGroups}">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 7h7M15 7h5M4 17h5M13 17h7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        <circle cx="13" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.7"/>
+        <circle cx="11" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      </svg>
+    </button>
   `;
 }
 
@@ -723,6 +733,13 @@ function renderMiniItems(notes) {
         : !note.done && dueDate === tomorrow ? "notes-mini__due--tomorrow" : "";
       return `
         <article class="notes-mini__item ${selectedClass}" data-id="${escapeHtml(String(note.id))}" draggable="true">
+          <div class="notes-mini__drag-handle" data-action="drag-note" title="Перетащить заметку" aria-hidden="true">
+            <svg viewBox="0 0 12 20" aria-hidden="true">
+              <circle cx="3" cy="4" r="1.25"/><circle cx="9" cy="4" r="1.25"/>
+              <circle cx="3" cy="10" r="1.25"/><circle cx="9" cy="10" r="1.25"/>
+              <circle cx="3" cy="16" r="1.25"/><circle cx="9" cy="16" r="1.25"/>
+            </svg>
+          </div>
           <button class="notes-mini__select" data-action="select" data-id="${escapeHtml(String(note.id))}" title="Открыть полностью">
             <div class="notes-mini__title">${escapeHtml(getDisplayTitle(note))}</div>
             <div class="notes-mini__text">${escapeHtml(getSnippet(note.text))}</div>
@@ -734,10 +751,6 @@ function renderMiniItems(notes) {
               </span>
             </div>
           </button>
-          <div class="notes-mini__tools">
-            <button class="notes-mini__tool" data-action="toggle" data-id="${escapeHtml(String(note.id))}" title="Переключить статус">${note.done ? "↺" : "✓"}</button>
-            <button class="notes-mini__tool notes-mini__tool--delete" data-action="delete" data-id="${escapeHtml(String(note.id))}" title="Удалить">×</button>
-          </div>
         </article>
       `;
     })
@@ -845,7 +858,7 @@ function renderEditor(notes, groups) {
           <label class="notes-editor__group">
             <span>Группа</span>
             <select id="notes-editor-group">
-              <option value="">Без группы</option>
+              <option value="">Группа не выбрана</option>
               ${groupOptions}
             </select>
           </label>
@@ -881,8 +894,24 @@ function renderEditor(notes, groups) {
           </div>
         </div>
         <div class="notes-editor__actions-buttons">
-          ${modalState.isCreating ? `<button class="notes-editor__btn" data-action="secondary">${secondaryLabel}</button>` : ""}
-          <button class="notes-editor__btn notes-editor__btn--primary" data-action="save">${primaryLabel}</button>
+          ${modalState.isCreating ? `
+            <button class="notes-editor__btn notes-editor__btn--icon" data-action="secondary" title="${secondaryLabel}" aria-label="${secondaryLabel}">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+            </button>
+          ` : ""}
+          ${!modalState.isCreating ? `
+            <button class="notes-editor__btn notes-editor__btn--icon notes-editor__btn--complete" data-action="toggle" data-id="${escapeHtml(String(current.id))}" title="${current.done ? "Вернуть в работу" : "Завершить"}" aria-label="${current.done ? "Вернуть заметку в работу" : "Завершить заметку"}">
+              ${current.done
+                ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8H4V4M4.7 8a8 8 0 111.2 9.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+                : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'}
+            </button>
+            <button class="notes-editor__btn notes-editor__btn--icon notes-editor__btn--delete" data-action="delete" data-id="${escapeHtml(String(current.id))}" title="Удалить заметку" aria-label="Удалить заметку">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8v9M12 8v9M16 8v9M5 5h14M9 5V3.5h6V5m2.5 0l-.7 15H7.2L6.5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          ` : ""}
+          <button class="notes-editor__btn notes-editor__btn--icon notes-editor__btn--primary" data-action="save" title="${primaryLabel}" aria-label="${primaryLabel}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5V4zm3 0v6h8V4M8 20v-6h8v6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </div>
     </div>
@@ -906,7 +935,6 @@ function rerenderModal(modal) {
   const groups = getGroups();
   const selectedGroupExists = groups.some((group) => String(group.id) === modalState.selectedGroupId);
   const isSpecialGroup = modalState.selectedGroupId === ALL_GROUPS_ID
-    || modalState.selectedGroupId === UNGROUPED_ID
     || modalState.selectedGroupId === COMPLETED_ID;
   if (!isSpecialGroup && !selectedGroupExists) {
     modalState.selectedGroupId = ALL_GROUPS_ID;
@@ -965,7 +993,7 @@ function addOrUpdateNote() {
     modalState.isCreating = false;
     modalState.selectedId = newNote.id;
     if (modalState.selectedGroupId === COMPLETED_ID) {
-      modalState.selectedGroupId = groupId || UNGROUPED_ID;
+      modalState.selectedGroupId = groupId || ALL_GROUPS_ID;
     }
     return;
   }
@@ -985,7 +1013,7 @@ function addOrUpdateNote() {
   modalState.draftText = text;
   saveNotes(notes);
   if (modalState.selectedGroupId !== ALL_GROUPS_ID && modalState.selectedGroupId !== COMPLETED_ID) {
-    const destinationGroupId = groupId || UNGROUPED_ID;
+    const destinationGroupId = groupId || ALL_GROUPS_ID;
     modalState.selectedGroupId = destinationGroupId;
     if (note.done) modalState.expandedCompletedGroups.add(destinationGroupId);
   }
@@ -1028,7 +1056,7 @@ async function deleteGroup(id) {
   if (!group) return false;
   const confirmed = await showNotesConfirm({
     title: "Удалить группу?",
-    message: `Задачи из группы «${group.name}» останутся в разделе «Без группы».`,
+    message: `Задачи из группы «${group.name}» останутся во вкладке «Все».`,
     confirmLabel: "Удалить",
     danger: true
   });
@@ -1046,7 +1074,7 @@ async function deleteGroup(id) {
   saveGroups(groups.filter((item) => String(item.id) !== id));
   saveNotes(notes);
   modalState.expandedCompletedGroups.delete(id);
-  modalState.selectedGroupId = UNGROUPED_ID;
+  modalState.selectedGroupId = ALL_GROUPS_ID;
   modalState.selectedId = null;
   modalState.isCreating = false;
   modalState.draftNoteId = null;
@@ -1060,7 +1088,7 @@ function toggleNote(id) {
   note.done = !note.done;
   saveNotes(notes);
   if (!note.done && modalState.selectedGroupId === COMPLETED_ID) {
-    modalState.selectedGroupId = getNoteGroupId(note, getGroups()) || UNGROUPED_ID;
+    modalState.selectedGroupId = getNoteGroupId(note, getGroups()) || ALL_GROUPS_ID;
   }
 }
 
@@ -1098,6 +1126,7 @@ function openNotesModal() {
   modalState.draftText = "";
   modalState.draftGroupId = "";
   modalState.draftDueDate = "";
+  modalState.isManagingGroups = false;
   modalState.isAddingGroup = false;
   modalState.groupNameDraft = "";
   modalState.expandedCompletedGroups.clear();
@@ -1186,7 +1215,7 @@ function openNotesModal() {
       return clientX < rect.left + rect.width / 2;
     });
     const addButton = list.querySelector('[data-action="toggle-group-form"]');
-    list.insertBefore(draggedItem, beforeItem || addButton);
+    list.insertBefore(draggedItem, beforeItem || addButton || null);
     groupDragState.changed = getRenderedGroupOrder().some((id, index) => id !== groupDragState.initialOrder[index]);
 
     const listRect = list.getBoundingClientRect();
@@ -1207,7 +1236,7 @@ function openNotesModal() {
       groupDragState.initialOrder.forEach((id) => {
         const item = [...(list?.querySelectorAll(".notes-groups__item[data-group-order-id]") || [])]
           .find((groupItem) => groupItem.dataset.groupOrderId === id);
-        if (item && addButton) list.insertBefore(item, addButton);
+        if (item) list.insertBefore(item, addButton || null);
       });
     }
     groupDragState.draggedId = null;
@@ -1305,7 +1334,7 @@ function openNotesModal() {
   modal.addEventListener("pointerdown", (event) => {
     const item = event.target.closest(".notes-mini__item[data-id]");
     noteDragState.originAction = event.target.closest("[data-action]")?.dataset.action || "";
-    if (event.pointerType === "mouse" || !item || event.target.closest(".notes-mini__tool")) return;
+    if (event.pointerType === "mouse" || !item || noteDragState.originAction !== "drag-note") return;
 
     noteDragState.pointerId = event.pointerId;
     noteDragState.pointerStartX = event.clientX;
@@ -1410,7 +1439,7 @@ function openNotesModal() {
     }
 
     const noteItem = event.target.closest(".notes-mini__item[data-id]");
-    if (!noteItem || noteDragState.originAction === "toggle" || noteDragState.originAction === "delete") {
+    if (!noteItem || noteDragState.originAction !== "drag-note") {
       event.preventDefault();
       return;
     }
@@ -1547,6 +1576,24 @@ function openNotesModal() {
       return;
     }
 
+    if (action === "toggle-group-settings") {
+      if (modalState.isManagingGroups && modalState.isAddingGroup && modalState.groupNameDraft.trim()) {
+        const confirmed = await showNotesConfirm({
+          title: "Закрыть настройки групп?",
+          message: "Введённое название новой группы не будет сохранено.",
+          confirmLabel: "Закрыть"
+        });
+        if (!confirmed) return;
+      }
+      modalState.isManagingGroups = !modalState.isManagingGroups;
+      if (!modalState.isManagingGroups) {
+        modalState.isAddingGroup = false;
+        modalState.groupNameDraft = "";
+      }
+      rerenderModal(modal);
+      return;
+    }
+
     if (action === "toggle-completed-list") {
       const groupId = modalState.selectedGroupId;
       const selectedNote = getNotes().find((note) => hasId(note, modalState.selectedId));
@@ -1606,6 +1653,21 @@ function openNotesModal() {
     }
 
     if (action === "toggle" && id) {
+      const note = getNotes().find((item) => hasId(item, id));
+      if (!note) return;
+      if (!note.done) {
+        const confirmed = await showNotesConfirm({
+          title: "Завершить задачу?",
+          message: "После завершения задача будет перемещена в список выполненных.",
+          confirmLabel: "Завершить",
+          success: true
+        });
+        if (!confirmed) return;
+        if (hasId(note, modalState.selectedId) && hasUnsavedNoteDraft()) addOrUpdateNote();
+        toggleNote(id);
+        rerenderModal(modal);
+        return;
+      }
       if (hasId({ id: modalState.selectedId }, id) && !await canDiscardDraft()) return;
       toggleNote(id);
       rerenderModal(modal);
@@ -1613,7 +1675,18 @@ function openNotesModal() {
     }
 
     if (action === "delete" && id) {
-      if (hasId({ id: modalState.selectedId }, id) && !await canDiscardDraft()) return;
+      const note = getNotes().find((item) => hasId(item, id));
+      if (!note) return;
+      const hasUnsavedChanges = hasId(note, modalState.selectedId) && hasUnsavedNoteDraft();
+      const confirmed = await showNotesConfirm({
+        title: "Удалить заметку?",
+        message: hasUnsavedChanges
+          ? "Заметка и все несохранённые изменения будут удалены без возможности восстановления."
+          : `Заметка «${getDisplayTitle(note)}» будет удалена без возможности восстановления.`,
+        confirmLabel: "Удалить",
+        danger: true
+      });
+      if (!confirmed) return;
       deleteNote(id);
       rerenderModal(modal);
       return;
@@ -1760,6 +1833,7 @@ window.addEventListener("space-tab:notes-restored", () => {
     modalState.draftText = "";
     modalState.draftGroupId = "";
     modalState.draftDueDate = "";
+    modalState.isManagingGroups = false;
     modalState.isAddingGroup = false;
     modalState.groupNameDraft = "";
     modalState.expandedCompletedGroups.clear();
