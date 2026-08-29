@@ -36,6 +36,21 @@ const groupDragState = {
   pointerScrolled: false
 };
 
+const noteDragState = {
+  draggedId: null,
+  changed: false,
+  initialOrder: [],
+  container: null,
+  originAction: "",
+  ignoreClickUntil: 0,
+  pointerId: null,
+  pointerTimer: null,
+  pointerStartX: 0,
+  pointerStartY: 0,
+  pointerDragging: false,
+  pointerScrolled: false
+};
+
 let dueDateRefreshTimer = null;
 
 function getNotes() {
@@ -130,7 +145,7 @@ function formatDate(timestamp) {
 function getSortedNotes(notes = getNotes()) {
   return [...notes].sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
-    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+    return 0;
   });
 }
 
@@ -154,6 +169,15 @@ function getTodayDateKey() {
   return `${year}-${month}-${day}`;
 }
 
+function getTomorrowDateKey() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const year = tomorrow.getFullYear();
+  const month = String(tomorrow.getMonth() + 1).padStart(2, "0");
+  const day = String(tomorrow.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function requiresAttention(note, today = getTodayDateKey()) {
   const dueDate = normalizeDueDate(note?.dueDate);
   return Boolean(!note?.done && dueDate && dueDate <= today);
@@ -169,6 +193,13 @@ function formatDueDate(value) {
     month: "short",
     ...(year !== new Date().getFullYear() ? { year: "numeric" } : {})
   });
+}
+
+function formatShortDueDate(value) {
+  const dueDate = normalizeDueDate(value);
+  if (!dueDate) return "";
+  const [, month, day] = dueDate.split("-");
+  return `${day}.${month}`;
 }
 
 function escapeHtml(text) {
@@ -534,15 +565,18 @@ function updateDueDateControl(modal) {
   const control = modal.querySelector(".notes-editor__due");
   const input = modal.querySelector("#notes-editor-due-date");
   const calendarButton = modal.querySelector(".notes-editor__due-calendar");
+  const dateChip = modal.querySelector("#notes-editor-due-chip");
   if (!control || !input || !calendarButton) return;
   input.value = modalState.draftDueDate;
   const currentNote = getNotes().find((note) => hasId(note, modalState.selectedId));
   const isDone = modalState.isCreating ? false : Boolean(currentNote?.done);
-  control.classList.toggle("notes-editor__due--scheduled", Boolean(modalState.draftDueDate));
-  control.classList.toggle(
-    "notes-editor__due--attention",
-    Boolean(!isDone && modalState.draftDueDate && modalState.draftDueDate <= getTodayDateKey())
+  const isTomorrow = Boolean(!isDone && modalState.draftDueDate === getTomorrowDateKey());
+  const dueRequiresAttention = Boolean(
+    !isDone && modalState.draftDueDate && modalState.draftDueDate <= getTodayDateKey()
   );
+  control.classList.toggle("notes-editor__due--scheduled", Boolean(modalState.draftDueDate));
+  control.classList.toggle("notes-editor__due--tomorrow", isTomorrow);
+  control.classList.toggle("notes-editor__due--attention", dueRequiresAttention);
   const ariaLabel = modalState.draftDueDate
     ? `Срок: ${formatDueDate(modalState.draftDueDate)}`
     : "Выбрать дату";
@@ -550,6 +584,13 @@ function updateDueDateControl(modal) {
   calendarButton.title = title;
   input.title = title;
   input.setAttribute("aria-label", ariaLabel);
+  if (dateChip) {
+    dateChip.hidden = !modalState.draftDueDate;
+    dateChip.textContent = formatShortDueDate(modalState.draftDueDate);
+    dateChip.title = modalState.draftDueDate ? ariaLabel : "";
+    dateChip.classList.toggle("notes-editor__chip--tomorrow", isTomorrow);
+    dateChip.classList.toggle("notes-editor__chip--attention", dueRequiresAttention);
+  }
 }
 
 function getDisplayTitle(note) {
@@ -609,7 +650,7 @@ function scheduleDueDateRefresh() {
 }
 
 function renderGroupSwitcher(notes, groups) {
-  const groupButton = (id, name, count, canDelete = false, attentionCount = 0) => {
+  const groupButton = (id, name, count, canDelete = false, attentionCount = 0, tomorrowCount = 0) => {
     const isActive = modalState.selectedGroupId === id;
     const activeClass = isActive ? "notes-groups__item--active" : "";
     const deletableClass = canDelete && isActive ? "notes-groups__item--deletable" : "";
@@ -620,6 +661,7 @@ function renderGroupSwitcher(notes, groups) {
           <span class="notes-groups__count">
             <span>${count}</span>
             ${attentionCount > 0 ? `<span class="notes-groups__attention" title="Требуют внимания">${attentionCount}</span>` : ""}
+            ${tomorrowCount > 0 ? `<span class="notes-groups__tomorrow" title="Срок завтра">${tomorrowCount}</span>` : ""}
           </span>
         </button>
         ${canDelete && isActive ? `<button class="notes-groups__delete" data-action="delete-group" data-group-id="${escapeHtml(id)}" aria-label="Удалить группу ${escapeHtml(name)}" title="Удалить группу">×</button>` : ""}
@@ -629,6 +671,8 @@ function renderGroupSwitcher(notes, groups) {
 
   const ungroupedCount = notes.filter((note) => !getNoteGroupId(note, groups)).length;
   const attentionNotes = notes.filter((note) => requiresAttention(note));
+  const tomorrowDate = getTomorrowDateKey();
+  const tomorrowNotes = notes.filter((note) => !note.done && normalizeDueDate(note.dueDate) === tomorrowDate);
   const ungroupedAttentionCount = attentionNotes.filter((note) => !getNoteGroupId(note, groups)).length;
   const groupById = new Map(groups.map((group) => [String(group.id), group]));
   const orderedGroupItems = getGroupOrder(groups)
@@ -640,7 +684,8 @@ function renderGroupSwitcher(notes, groups) {
       if (!group) return "";
       const count = notes.filter((note) => getNoteGroupId(note, groups) === id).length;
       const attentionCount = attentionNotes.filter((note) => getNoteGroupId(note, groups) === id).length;
-      return groupButton(id, String(group.name), count, true, attentionCount);
+      const tomorrowCount = tomorrowNotes.filter((note) => getNoteGroupId(note, groups) === id).length;
+      return groupButton(id, String(group.name), count, true, attentionCount, tomorrowCount);
     })
     .join("");
 
@@ -659,12 +704,13 @@ function renderGroupSwitcher(notes, groups) {
 }
 
 function renderMiniItems(notes) {
+  const today = getTodayDateKey();
+  const tomorrow = getTomorrowDateKey();
   return notes
     .map((note) => {
       const selectedClass = hasId(note, modalState.selectedId) && !modalState.isCreating ? "notes-mini__item--active" : "";
       const dateLabel = note.updatedAt ? `Изменено ${formatDate(note.updatedAt)}` : formatDate(note.createdAt);
       const dueDate = normalizeDueDate(note.dueDate);
-      const today = getTodayDateKey();
       const dueLabel = dueDate
         ? note.done
           ? formatDueDate(dueDate)
@@ -672,15 +718,18 @@ function renderMiniItems(notes) {
           ? "Сегодня"
           : dueDate < today ? `Просрочено · ${formatDueDate(dueDate)}` : formatDueDate(dueDate)
         : "";
+      const dueClass = requiresAttention(note, today)
+        ? "notes-mini__due--attention"
+        : !note.done && dueDate === tomorrow ? "notes-mini__due--tomorrow" : "";
       return `
-        <article class="notes-mini__item ${selectedClass}" data-id="${escapeHtml(String(note.id))}">
+        <article class="notes-mini__item ${selectedClass}" data-id="${escapeHtml(String(note.id))}" draggable="true">
           <button class="notes-mini__select" data-action="select" data-id="${escapeHtml(String(note.id))}" title="Открыть полностью">
             <div class="notes-mini__title">${escapeHtml(getDisplayTitle(note))}</div>
             <div class="notes-mini__text">${escapeHtml(getSnippet(note.text))}</div>
             <div class="notes-mini__meta">
               <span class="${note.updatedAt ? "notes-mini__edited" : ""}">${dateLabel}</span>
               <span class="notes-mini__meta-tags">
-                ${dueDate ? `<span class="notes-mini__due ${requiresAttention(note, today) ? "notes-mini__due--attention" : ""}" title="Срок: ${escapeHtml(formatDueDate(dueDate))}">${escapeHtml(dueLabel)}</span>` : ""}
+                ${dueDate ? `<span class="notes-mini__due ${dueClass}" title="Срок: ${escapeHtml(formatDueDate(dueDate))}">${escapeHtml(dueLabel)}</span>` : ""}
                 ${note.done ? '<span class="notes-mini__status">Готово</span>' : ""}
               </span>
             </div>
@@ -747,7 +796,13 @@ function renderEditor(notes, groups) {
 
   const primaryLabel = modalState.isCreating ? "Добавить" : "Сохранить";
   const secondaryLabel = "Отмена";
-  const doneClass = current.done ? "notes-editor__chip--done" : "";
+  const dueIsTomorrow = Boolean(!current.done && modalState.draftDueDate === getTomorrowDateKey());
+  const dueRequiresAttention = Boolean(
+    !current.done && modalState.draftDueDate && modalState.draftDueDate <= getTodayDateKey()
+  );
+  const dueChipClass = dueRequiresAttention
+    ? "notes-editor__chip--attention"
+    : dueIsTomorrow ? "notes-editor__chip--tomorrow" : "";
   const formattingDisabled = modalState.isPreviewing ? " disabled" : "";
   const groupOptions = groups
     .map((group) => {
@@ -772,7 +827,7 @@ function renderEditor(notes, groups) {
             ${current.updatedAt ? `<span class="notes-editor__edited">Изменено ${formatDate(current.updatedAt)}</span>` : ""}
           </p>
         </div>
-        ${!modalState.isCreating ? `<span class="notes-editor__chip ${doneClass}">${current.done ? "Выполнено" : "В работе"}</span>` : ""}
+        <span id="notes-editor-due-chip" class="notes-editor__chip ${dueChipClass}" title="${modalState.draftDueDate ? `Срок: ${escapeHtml(formatDueDate(modalState.draftDueDate))}` : ""}" ${modalState.draftDueDate ? "" : "hidden"}>${escapeHtml(formatShortDueDate(modalState.draftDueDate))}</span>
       </div>
 
       <textarea
@@ -794,7 +849,7 @@ function renderEditor(notes, groups) {
               ${groupOptions}
             </select>
           </label>
-          <div class="notes-editor__due ${modalState.draftDueDate ? "notes-editor__due--scheduled" : ""} ${!current.done && modalState.draftDueDate && modalState.draftDueDate <= getTodayDateKey() ? "notes-editor__due--attention" : ""}">
+          <div class="notes-editor__due ${modalState.draftDueDate ? "notes-editor__due--scheduled" : ""} ${dueIsTomorrow ? "notes-editor__due--tomorrow" : ""} ${dueRequiresAttention ? "notes-editor__due--attention" : ""}">
             <button class="notes-editor__due-calendar" type="button" data-action="pick-due-date" title="${modalState.draftDueDate ? "Изменить срок" : "Выбрать дату"}" aria-hidden="true" tabindex="-1">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5v3M17 3.5v3M4.5 9h15M6.5 5h11a2 2 0 012 2v11a2 2 0 01-2 2h-11a2 2 0 01-2-2V7a2 2 0 012-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
@@ -1017,6 +1072,20 @@ function deleteNote(id) {
   }
 }
 
+function saveRenderedNoteOrder(renderedIds) {
+  const notes = getNotes();
+  const notesById = new Map(notes.map((note) => [String(note.id), note]));
+  const orderedNotes = renderedIds.map((id) => notesById.get(String(id))).filter(Boolean);
+  const orderedIds = new Set(orderedNotes.map((note) => String(note.id)));
+  let orderedIndex = 0;
+
+  const reorderedNotes = notes.map((note) => {
+    if (!orderedIds.has(String(note.id))) return note;
+    return orderedNotes[orderedIndex++];
+  });
+  saveNotes(reorderedNotes);
+}
+
 function openNotesModal() {
   const existingModal = document.getElementById("notes-modal");
   if (existingModal) existingModal.remove();
@@ -1065,8 +1134,13 @@ function openNotesModal() {
 
   const closeModal = () => {
     clearTimeout(groupDragState.pointerTimer);
+    clearTimeout(noteDragState.pointerTimer);
+    finishGroupDrag(false);
+    finishNoteDrag(false);
     groupDragState.pointerTimer = null;
     groupDragState.pointerId = null;
+    noteDragState.pointerTimer = null;
+    noteDragState.pointerId = null;
     modal.remove();
     document.body.style.overflow = "";
     renderNotesButton();
@@ -1142,6 +1216,75 @@ function openNotesModal() {
     groupDragState.pointerDragging = false;
   };
 
+  const getNoteItems = (container) => [...(container?.children || [])]
+    .filter((item) => item.matches?.(".notes-mini__item[data-id]"));
+
+  const getRenderedNoteOrder = (container) => getNoteItems(container)
+    .map((item) => item.dataset.id)
+    .filter(Boolean);
+
+  const beginNoteDrag = (item) => {
+    noteDragState.draggedId = item.dataset.id;
+    noteDragState.container = item.parentElement;
+    noteDragState.initialOrder = getRenderedNoteOrder(noteDragState.container);
+    noteDragState.changed = false;
+    item.classList.add("notes-mini__item--dragging");
+  };
+
+  const moveNoteItem = (clientY) => {
+    const container = noteDragState.container;
+    const items = getNoteItems(container);
+    const draggedItem = items.find((item) => item.dataset.id === noteDragState.draggedId);
+    if (!draggedItem) return;
+
+    const beforeItem = items
+      .filter((item) => item !== draggedItem)
+      .find((item) => {
+        const rect = item.getBoundingClientRect();
+        return clientY < rect.top + rect.height / 2;
+      });
+    const completedBlock = container?.id === "notes-mini-list"
+      ? [...container.children].find((item) => item.matches?.(".notes-mini__completed"))
+      : null;
+    container.insertBefore(draggedItem, beforeItem || completedBlock || null);
+    noteDragState.changed = getRenderedNoteOrder(container)
+      .some((id, index) => id !== noteDragState.initialOrder[index]);
+
+    const list = modal.querySelector("#notes-mini-list");
+    const listRect = list?.getBoundingClientRect();
+    if (list && listRect) {
+      if (clientY < listRect.top + 44) list.scrollTop -= 14;
+      if (clientY > listRect.bottom - 44) list.scrollTop += 14;
+    }
+  };
+
+  const finishNoteDrag = (commit = false) => {
+    if (!noteDragState.draggedId) return;
+    const container = noteDragState.container;
+    const draggedItem = getNoteItems(container)
+      .find((item) => item.dataset.id === noteDragState.draggedId);
+    draggedItem?.classList.remove("notes-mini__item--dragging");
+
+    if (commit && noteDragState.changed) {
+      saveRenderedNoteOrder(getRenderedNoteOrder(container));
+      noteDragState.ignoreClickUntil = Date.now() + 350;
+    } else if (!commit && noteDragState.changed) {
+      const completedBlock = container?.id === "notes-mini-list"
+        ? [...container.children].find((item) => item.matches?.(".notes-mini__completed"))
+        : null;
+      noteDragState.initialOrder.forEach((id) => {
+        const item = getNoteItems(container).find((noteItem) => noteItem.dataset.id === id);
+        if (item) container.insertBefore(item, completedBlock || null);
+      });
+    }
+
+    noteDragState.draggedId = null;
+    noteDragState.changed = false;
+    noteDragState.initialOrder = [];
+    noteDragState.container = null;
+    noteDragState.pointerDragging = false;
+  };
+
   modal.addEventListener("pointerdown", (event) => {
     const item = event.target.closest(".notes-groups__item[data-group-order-id]");
     groupDragState.originAction = event.target.closest("[data-action]")?.dataset.action || "";
@@ -1155,6 +1298,23 @@ function openNotesModal() {
     groupDragState.pointerTimer = setTimeout(() => {
       groupDragState.pointerDragging = true;
       beginGroupDrag(item);
+      item.setPointerCapture?.(event.pointerId);
+    }, 320);
+  });
+
+  modal.addEventListener("pointerdown", (event) => {
+    const item = event.target.closest(".notes-mini__item[data-id]");
+    noteDragState.originAction = event.target.closest("[data-action]")?.dataset.action || "";
+    if (event.pointerType === "mouse" || !item || event.target.closest(".notes-mini__tool")) return;
+
+    noteDragState.pointerId = event.pointerId;
+    noteDragState.pointerStartX = event.clientX;
+    noteDragState.pointerStartY = event.clientY;
+    noteDragState.pointerScrolled = false;
+    clearTimeout(noteDragState.pointerTimer);
+    noteDragState.pointerTimer = setTimeout(() => {
+      noteDragState.pointerDragging = true;
+      beginNoteDrag(item);
       item.setPointerCapture?.(event.pointerId);
     }, 320);
   });
@@ -1183,6 +1343,30 @@ function openNotesModal() {
     }
   });
 
+  modal.addEventListener("pointermove", (event) => {
+    if (event.pointerId !== noteDragState.pointerId) return;
+    const list = modal.querySelector("#notes-mini-list");
+    if (!list) return;
+    if (noteDragState.pointerDragging) {
+      event.preventDefault();
+      moveNoteItem(event.clientY);
+      return;
+    }
+
+    const deltaX = event.clientX - noteDragState.pointerStartX;
+    const deltaY = event.clientY - noteDragState.pointerStartY;
+    if (Math.abs(deltaX) <= 8 && Math.abs(deltaY) <= 8) return;
+    clearTimeout(noteDragState.pointerTimer);
+    noteDragState.pointerTimer = null;
+    if (Math.abs(deltaY) > Math.abs(deltaX)) {
+      event.preventDefault();
+      list.scrollTop -= deltaY;
+      noteDragState.pointerStartX = event.clientX;
+      noteDragState.pointerStartY = event.clientY;
+      noteDragState.pointerScrolled = true;
+    }
+  });
+
   const finishPointerInteraction = (event, cancelled = false) => {
     if (event.pointerId !== groupDragState.pointerId) return;
     clearTimeout(groupDragState.pointerTimer);
@@ -1198,35 +1382,76 @@ function openNotesModal() {
   modal.addEventListener("pointerup", (event) => finishPointerInteraction(event));
   modal.addEventListener("pointercancel", (event) => finishPointerInteraction(event, true));
 
+  const finishNotePointerInteraction = (event, cancelled = false) => {
+    if (event.pointerId !== noteDragState.pointerId) return;
+    clearTimeout(noteDragState.pointerTimer);
+    noteDragState.pointerTimer = null;
+    const wasDragging = noteDragState.pointerDragging;
+    if (wasDragging) finishNoteDrag(!cancelled);
+    if ((wasDragging && !cancelled) || noteDragState.pointerScrolled) {
+      noteDragState.ignoreClickUntil = Date.now() + 350;
+    }
+    noteDragState.pointerId = null;
+    noteDragState.pointerDragging = false;
+    noteDragState.pointerScrolled = false;
+  };
+  modal.addEventListener("pointerup", (event) => finishNotePointerInteraction(event));
+  modal.addEventListener("pointercancel", (event) => finishNotePointerInteraction(event, true));
+
   modal.addEventListener("dragstart", (event) => {
-    const item = event.target.closest(".notes-groups__item[data-group-order-id]");
-    if (!item || groupDragState.originAction === "delete-group") {
+    const groupItem = event.target.closest(".notes-groups__item[data-group-order-id]");
+    if (groupItem && groupDragState.originAction !== "delete-group") {
+      beginGroupDrag(groupItem);
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", groupDragState.draggedId);
+      }
+      return;
+    }
+
+    const noteItem = event.target.closest(".notes-mini__item[data-id]");
+    if (!noteItem || noteDragState.originAction === "toggle" || noteDragState.originAction === "delete") {
       event.preventDefault();
       return;
     }
-    beginGroupDrag(item);
+    beginNoteDrag(noteItem);
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", groupDragState.draggedId);
+      event.dataTransfer.setData("text/plain", noteDragState.draggedId);
     }
   });
 
   modal.addEventListener("dragover", (event) => {
-    if (!groupDragState.draggedId) return;
-    const list = event.target.closest(".notes-groups__list");
-    if (!list) return;
+    if (groupDragState.draggedId) {
+      const list = event.target.closest(".notes-groups__list");
+      if (!list) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      moveGroupItem(list, event.clientX);
+      return;
+    }
+
+    if (!noteDragState.draggedId || !event.target.closest("#notes-mini-list")) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-
-    moveGroupItem(list, event.clientX);
+    moveNoteItem(event.clientY);
   });
 
   modal.addEventListener("drop", (event) => {
-    if (!groupDragState.draggedId) return;
-    event.preventDefault();
-    finishGroupDrag(true);
+    if (groupDragState.draggedId) {
+      event.preventDefault();
+      finishGroupDrag(true);
+      return;
+    }
+    if (noteDragState.draggedId) {
+      event.preventDefault();
+      finishNoteDrag(true);
+    }
   });
-  modal.addEventListener("dragend", () => finishGroupDrag(false));
+  modal.addEventListener("dragend", () => {
+    finishGroupDrag(false);
+    finishNoteDrag(false);
+  });
 
   modal.addEventListener("click", async (event) => {
     const actionEl = event.target.closest("[data-action]");
@@ -1237,6 +1462,12 @@ function openNotesModal() {
 
     if (actionEl.closest(".notes-groups__item") && Date.now() < groupDragState.ignoreClickUntil) {
       groupDragState.ignoreClickUntil = 0;
+      event.preventDefault();
+      return;
+    }
+
+    if (actionEl.closest(".notes-mini__item") && Date.now() < noteDragState.ignoreClickUntil) {
+      noteDragState.ignoreClickUntil = 0;
       event.preventDefault();
       return;
     }

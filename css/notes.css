@@ -458,6 +458,22 @@
   box-shadow: 0 0 10px rgba(244, 91, 70, 0.12);
 }
 
+.notes-groups__tomorrow {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 199, 116, 0.42);
+  border-radius: 999px;
+  background: rgba(255, 189, 85, 0.14);
+  color: rgba(255, 229, 178, 0.98);
+  font-size: 9px;
+  font-weight: 800;
+  box-shadow: 0 0 10px rgba(255, 189, 85, 0.1);
+}
+
 .notes-groups__delete {
   width: 26px;
   color: rgba(222, 236, 249, 0.58);
@@ -577,6 +593,33 @@
   overflow: hidden;
 }
 
+.notes-mini__item[draggable="true"] {
+  cursor: grab;
+  user-select: none;
+  transition: opacity 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.notes-mini__item[draggable="true"] .notes-mini__select {
+  cursor: grab;
+}
+
+.notes-mini__item.notes-mini__item--dragging {
+  opacity: 0.42;
+  border-color: rgba(110, 210, 169, 0.5);
+  background: rgba(110, 210, 169, 0.12);
+  cursor: grabbing;
+}
+
+.notes-mini__item--dragging .notes-mini__select {
+  cursor: grabbing;
+}
+
+@media (any-pointer: coarse) {
+  .notes-mini__item[draggable="true"] {
+    touch-action: none;
+  }
+}
+
 .notes-mini__item--active {
   border-color: rgba(132, 205, 255, 0.48);
   background: rgba(101, 181, 247, 0.12);
@@ -648,6 +691,12 @@
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.notes-mini__due--tomorrow {
+  border-color: rgba(255, 199, 116, 0.45);
+  background: rgba(255, 189, 85, 0.12);
+  color: rgba(255, 229, 178, 0.95);
 }
 
 .notes-mini__due--attention {
@@ -781,19 +830,25 @@
 
 .notes-editor__chip {
   border-radius: 999px;
-  border: 1px solid rgba(255, 199, 116, 0.45);
-  background: rgba(255, 189, 85, 0.12);
-  color: rgba(255, 229, 178, 0.95);
+  border: 1px solid rgba(110, 210, 169, 0.38);
+  background: rgba(110, 210, 169, 0.1);
+  color: rgba(189, 244, 219, 0.95);
   font-size: 11px;
   font-weight: 700;
   padding: 6px 10px;
   white-space: nowrap;
 }
 
-.notes-editor__chip--done {
-  border-color: rgba(110, 210, 169, 0.45);
-  background: rgba(110, 210, 169, 0.12);
-  color: rgba(189, 244, 219, 0.95);
+.notes-editor__chip--tomorrow {
+  border-color: rgba(255, 199, 116, 0.45);
+  background: rgba(255, 189, 85, 0.12);
+  color: rgba(255, 229, 178, 0.95);
+}
+
+.notes-editor__chip--attention {
+  border-color: rgba(255, 133, 104, 0.4);
+  background: rgba(244, 91, 70, 0.12);
+  color: rgba(255, 191, 171, 0.96);
 }
 
 .notes-editor__group {
@@ -861,6 +916,12 @@
   border-color: rgba(110, 210, 169, 0.28);
   background: rgba(110, 210, 169, 0.09);
   color: rgba(184, 235, 210, 0.92);
+}
+
+.notes-editor__due--tomorrow {
+  border-color: rgba(255, 199, 116, 0.4);
+  background: rgba(255, 189, 85, 0.1);
+  color: rgba(255, 229, 178, 0.95);
 }
 
 .notes-editor__due--attention {
