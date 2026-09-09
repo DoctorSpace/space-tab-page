@@ -17,6 +17,7 @@ const defaultFinanceData = {
   snapshots: {},
   comments: {},
   categoryColors: {},
+  categoryOrder: [],
   sales: []
 };
 
@@ -39,8 +40,9 @@ function updateModalLock() {
   const financeOpen = document.getElementById("finance-modal")?.classList.contains("finance-modal--open");
   const calendarOpen = document.getElementById("finance-calendar-modal")?.classList.contains("finance-calendar-modal--open");
   const commentOpen = document.getElementById("finance-comment-modal")?.classList.contains("finance-comment-modal--open");
+  const confirmOpen = Boolean(document.getElementById("finance-confirm"));
 
-  if (financeOpen || calendarOpen || commentOpen) {
+  if (financeOpen || calendarOpen || commentOpen || confirmOpen) {
     document.body.style.overflow = "hidden";
     document.body.classList.add("modal-open");
     return;
@@ -64,6 +66,13 @@ function formatPreciseCurrency(value) {
     currency: "RUB",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
+  }).format(Number(value) || 0);
+}
+
+function formatPercent(value) {
+  return new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1
   }).format(Number(value) || 0);
 }
 
@@ -163,9 +172,21 @@ function loadFinanceData() {
       categoryColors[String(key)] = String(value).toUpperCase();
     });
 
+    const accountCategories = [...new Set(accounts.map((account) => account.category || "Без категории"))];
+    const categorySet = new Set(accountCategories);
+    const categoryOrder = [];
+    (Array.isArray(parsed?.categoryOrder) ? parsed.categoryOrder : []).forEach((category) => {
+      const value = String(category || "").trim();
+      if (!value || !categorySet.has(value) || categoryOrder.includes(value)) return;
+      categoryOrder.push(value);
+    });
+    accountCategories.forEach((category) => {
+      if (!categoryOrder.includes(category)) categoryOrder.push(category);
+    });
+
     const sales = Array.isArray(parsed?.sales) ? parsed.sales.map(sanitizeSaleItem) : [];
 
-    return { accounts, entries: {}, snapshots, comments, categoryColors, sales };
+    return { accounts, entries: {}, snapshots, comments, categoryColors, categoryOrder, sales };
   } catch {
     return JSON.parse(JSON.stringify(defaultFinanceData));
   }
@@ -194,6 +215,76 @@ function applyFinanceStateFromSync(payload) {
   localStorage.setItem(FINANCE_KEY, JSON.stringify(normalized));
   window.dispatchEvent(new CustomEvent("space-tab:finance-updated"));
   return normalized;
+}
+
+function showFinanceConfirm({ title, message, confirmLabel, danger = false, inputLabel = "", inputPlaceholder = "", inputValue = "" }) {
+  if (document.getElementById("finance-confirm")) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    let closed = false;
+    const confirmModal = document.createElement("div");
+    confirmModal.id = "finance-confirm";
+    confirmModal.className = "finance-confirm";
+    confirmModal.innerHTML = `
+      <div class="finance-confirm__overlay" data-confirm-action="cancel"></div>
+      <section class="finance-confirm__content${danger ? " finance-confirm__content--danger" : ""}" role="alertdialog" aria-modal="true" aria-labelledby="finance-confirm-title" aria-describedby="finance-confirm-message">
+        <div class="finance-confirm__icon" aria-hidden="true">${danger ? "!" : "?"}</div>
+        <h3 id="finance-confirm-title">${escapeHtml(title)}</h3>
+        <p id="finance-confirm-message">${escapeHtml(message)}</p>
+        ${inputLabel ? `
+          <label class="finance-confirm__field">
+            <span>${escapeHtml(inputLabel)}</span>
+            <textarea maxlength="240" rows="4" placeholder="${escapeAttribute(inputPlaceholder)}">${escapeHtml(inputValue)}</textarea>
+          </label>
+        ` : ""}
+        <div class="finance-confirm__actions">
+          <button class="finance-confirm__button" type="button" data-confirm-action="cancel">Отмена</button>
+          <button class="finance-confirm__button finance-confirm__button--confirm${danger ? " finance-confirm__button--danger" : ""}" type="button" data-confirm-action="confirm">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </section>
+    `;
+
+    const close = (confirmed) => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener("keydown", keyHandler, true);
+      confirmModal.remove();
+      updateModalLock();
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+      resolve(confirmed);
+    };
+    const keyHandler = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close(false);
+        return;
+      }
+      if (event.key === "Tab") {
+        const focusable = [...confirmModal.querySelectorAll("textarea, .finance-confirm__button")];
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    };
+
+    confirmModal.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-confirm-action]")?.dataset.confirmAction;
+      if (action === "cancel") close(false);
+      if (action === "confirm") close(inputLabel ? String(confirmModal.querySelector("textarea")?.value || "").trim() : true);
+    });
+    document.addEventListener("keydown", keyHandler, true);
+    document.body.appendChild(confirmModal);
+    updateModalLock();
+    (confirmModal.querySelector("textarea") || confirmModal.querySelector('[data-confirm-action="cancel"]'))?.focus();
+  });
 }
 
 function ensureFinanceModal() {
@@ -429,9 +520,14 @@ function getAccountTotals(data) {
   });
 }
 
-function getFinanceSeries(data, range = "all") {
-  const filter = financeState.chartCategoryFilter;
-  const visibleAccounts = getChartFilteredAccounts(data, financeState.selectedDate);
+function getFinanceSeries(data, range = "all", options = {}) {
+  const filter = options.ignoreFilters ? "all" : financeState.chartCategoryFilter;
+  const accountFilters = options.ignoreFilters || !Array.isArray(financeState.chartAccountFilters) ? [] : financeState.chartAccountFilters;
+  const visibleAccounts = data.accounts.filter((account) => {
+    if (filter !== "all" && account.category !== filter) return false;
+    if (filter !== "all" && accountFilters.length && !accountFilters.includes(account.id)) return false;
+    return true;
+  });
   const sortedDates = getSnapshotDates(data).filter((date) => date <= financeState.selectedDate);
   const currentByAccount = Object.fromEntries(visibleAccounts.map((account) => [account.id, Number(account.openingBalance) || 0]));
   const updateAmounts = (date) => {
@@ -444,7 +540,7 @@ function getFinanceSeries(data, range = "all") {
     });
   };
   const buildPoint = (date) => {
-    const categories = visibleAccounts.reduce((map, account) => {
+    const categories = visibleAccounts.filter((account) => !isAccountArchivedForDate(account, date)).reduce((map, account) => {
       const key = account.category || "Без категории";
       map[key] = (map[key] || 0) + (Number(currentByAccount[account.id]) || 0);
       return map;
@@ -455,10 +551,14 @@ function getFinanceSeries(data, range = "all") {
 
   if (range === "all") {
     if (!sortedDates.length) return [buildPoint(financeState.selectedDate)];
-    return sortedDates.map((date) => {
+    const series = sortedDates.map((date) => {
       updateAmounts(date);
       return buildPoint(date);
     });
+    if (series[series.length - 1].date !== financeState.selectedDate) {
+      series.push(buildPoint(financeState.selectedDate));
+    }
+    return series;
   }
 
   const rangeStart = getRangeStartDate(financeState.selectedDate, range);
@@ -571,16 +671,6 @@ function getRangeLabel(range) {
     "6months": "за 6 месяцев",
     year: "за год"
   }[range] || "за месяц";
-}
-
-function getCategoryTotalsForDate(data, date, options = {}) {
-  const { includeArchived = false } = options;
-  const accounts = getAccountsForDate(data, date, { includeArchived }).filter((account) => includeArchived || !isAccountArchivedForDate(account, financeState.selectedDate));
-  return accounts.reduce((map, account) => {
-    const key = account.category || "Без категории";
-    map.set(key, (map.get(key) || 0) + getAmountAtDate(data, account, date));
-    return map;
-  }, new Map());
 }
 
 function buildChartMarkup(series, data = loadFinanceData()) {
@@ -797,20 +887,69 @@ function syncSalesDraftFromDom(data) {
 
 function clearFinanceDragState() {
   financeState.draggingAccountId = null;
-  document.querySelectorAll(".finance-sheet__row--drag-over").forEach((element) => {
-    element.classList.remove("finance-sheet__row--drag-over");
+  clearFinanceDropTargets();
+}
+
+function clearFinanceDropTargets() {
+  document.querySelectorAll(".finance-sheet__row--drag-before, .finance-sheet__row--drag-after").forEach((element) => {
+    element.classList.remove("finance-sheet__row--drag-before", "finance-sheet__row--drag-after");
+  });
+  document.querySelectorAll(".finance-category-group--drag-over").forEach((element) => {
+    element.classList.remove("finance-category-group--drag-over");
   });
 }
 
-function moveAccountBeforeTarget(data, sourceId, targetId) {
-  if (!sourceId || !targetId || sourceId === targetId) return false;
+function moveFinanceAccount(data, sourceId, { targetId = "", position = "before", category = "" } = {}) {
+  if (!sourceId || sourceId === targetId) return false;
   const sourceIndex = data.accounts.findIndex((account) => account.id === sourceId);
-  const targetIndex = data.accounts.findIndex((account) => account.id === targetId);
-  if (sourceIndex === -1 || targetIndex === -1) return false;
+  if (sourceIndex === -1) return false;
 
+  const originalCategory = data.accounts[sourceIndex].category;
   const [sourceAccount] = data.accounts.splice(sourceIndex, 1);
-  const nextTargetIndex = data.accounts.findIndex((account) => account.id === targetId);
-  data.accounts.splice(nextTargetIndex, 0, sourceAccount);
+  let insertIndex = sourceIndex;
+
+  if (targetId) {
+    const targetIndex = data.accounts.findIndex((account) => account.id === targetId);
+    if (targetIndex === -1) {
+      data.accounts.splice(sourceIndex, 0, sourceAccount);
+      return false;
+    }
+    sourceAccount.category = data.accounts[targetIndex].category;
+    insertIndex = targetIndex + (position === "after" ? 1 : 0);
+  } else {
+    const targetCategory = String(category || "").trim();
+    if (!targetCategory) {
+      data.accounts.splice(sourceIndex, 0, sourceAccount);
+      return false;
+    }
+    sourceAccount.category = targetCategory;
+    const lastCategoryIndex = data.accounts.reduce(
+      (lastIndex, account, index) => account.category === targetCategory ? index : lastIndex,
+      -1
+    );
+    insertIndex = lastCategoryIndex === -1 ? Math.min(sourceIndex, data.accounts.length) : lastCategoryIndex + 1;
+  }
+
+  data.accounts.splice(insertIndex, 0, sourceAccount);
+  return originalCategory !== sourceAccount.category || sourceIndex !== insertIndex;
+}
+
+function moveFinanceCategory(data, category, direction, visibleCategories) {
+  if (direction !== "up" && direction !== "down") return false;
+  const visibleIndex = visibleCategories.indexOf(category);
+  const targetVisibleIndex = visibleIndex + (direction === "up" ? -1 : direction === "down" ? 1 : 0);
+  if (visibleIndex === -1 || targetVisibleIndex < 0 || targetVisibleIndex >= visibleCategories.length) return false;
+
+  const order = Array.isArray(data.categoryOrder) ? [...data.categoryOrder] : [];
+  visibleCategories.forEach((item) => {
+    if (!order.includes(item)) order.push(item);
+  });
+  const categoryIndex = order.indexOf(category);
+  const targetIndex = order.indexOf(visibleCategories[targetVisibleIndex]);
+  if (categoryIndex === -1 || targetIndex === -1) return false;
+
+  [order[categoryIndex], order[targetIndex]] = [order[targetIndex], order[categoryIndex]];
+  data.categoryOrder = order;
   return true;
 }
 
@@ -839,6 +978,8 @@ function renderFinanceHeader(data) {
 function buildAccountsMarkup(accountTotals) {
   const totalBalance = accountTotals.reduce((sum, account) => sum + account.total, 0);
   const totalDelta = accountTotals.reduce((sum, account) => sum + account.delta, 0);
+  const changedAccountsCount = accountTotals.filter((account) => account.delta !== 0).length;
+  const unchangedAccountsCount = accountTotals.length - changedAccountsCount;
   const data = loadFinanceData();
   const groupedAccounts = accountTotals.reduce((map, account) => {
     const key = account.category || "Без категории";
@@ -846,6 +987,12 @@ function buildAccountsMarkup(accountTotals) {
     map.get(key).push(account);
     return map;
   }, new Map());
+  const categoryPositions = new Map((data.categoryOrder || []).map((category, index) => [category, index]));
+  const groupedEntries = Array.from(groupedAccounts.entries()).sort((left, right) => {
+    const leftIndex = categoryPositions.get(left[0]) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = categoryPositions.get(right[0]) ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex;
+  });
 
   function buildDeltaMarkup(delta) {
     if (!delta) return '<span class="finance-delta finance-delta--flat">0</span>';
@@ -859,11 +1006,11 @@ function buildAccountsMarkup(accountTotals) {
   }
 
   return `
-    <section class="finance-card">
+    <section class="finance-card finance-card--accounts">
       <div class="finance-card__head">
         <div>
           <p class="finance-card__eyebrow">Мои счета</p>
-          <h3>Таблица счетов</h3>
+          <h3>Счета и накопления</h3>
         </div>
         <div class="finance-card__head-actions">
           <button class="finance-action finance-action--ghost" type="button" data-action="toggle-finance-edit">${financeState.editMode ? "Готово" : "Редактировать"}</button>
@@ -871,24 +1018,49 @@ function buildAccountsMarkup(accountTotals) {
         </div>
       </div>
       ${buildCategoryOptions(data)}
+      <div class="finance-accounts-overview">
+        <div class="finance-accounts-overview__item finance-accounts-overview__date">
+          <small>Дата среза</small>
+          <strong>${formatHumanDate(financeState.selectedDate)}</strong>
+        </div>
+        <div class="finance-accounts-overview__item finance-accounts-overview__balance">
+          <small>Общий баланс</small>
+          <strong>${formatCurrency(totalBalance)}</strong>
+        </div>
+        <div class="finance-accounts-overview__item"><small>Активных счетов</small><strong>${accountTotals.length}</strong></div>
+        <div class="finance-accounts-overview__item finance-accounts-overview__status--changed"><small>С изменениями</small><strong>${changedAccountsCount}</strong></div>
+        <div class="finance-accounts-overview__item finance-accounts-overview__status--unchanged"><small>Без изменений</small><strong>${unchangedAccountsCount}</strong></div>
+        <div class="finance-accounts-overview__item"><small>Категорий</small><strong>${groupedEntries.length}</strong></div>
+      </div>
       <div class="finance-sheet-wrap">
-        ${Array.from(groupedAccounts.entries())
+        ${groupedEntries
           .map(
-            ([categoryName, accounts]) => {
+            ([categoryName, accounts], categoryIndex) => {
               const categoryMeta = getCategoryMeta(categoryName);
               const categoryColor = getCategoryColor(data, categoryName);
               const categoryTextColor = getCategoryTextColor(categoryColor);
               return `
-              <section class="finance-category-group finance-category-group--${categoryMeta.tone}">
+              <section class="finance-category-group finance-category-group--${categoryMeta.tone}" data-category="${escapeAttribute(categoryName)}" style="--category-color:${categoryColor}">
                 <div class="finance-category-group__head">
                   <div class="finance-category-group__title">
                     <span class="finance-category-badge" style="--category-badge-color:${categoryColor};--category-badge-text:${categoryTextColor}">${categoryMeta.icon}</span>
-                    <h4>${escapeHtml(categoryName)}</h4>
+                    <div class="finance-category-group__copy">
+                      <h4>${escapeHtml(categoryName)}</h4>
+                      <span>${accounts.length} сч. · ${formatCurrency(accounts.reduce((sum, account) => sum + account.total, 0))}</span>
+                    </div>
+                    ${financeState.editMode ? `
+                      <span class="finance-category-group__order" role="group" aria-label="Порядок категории ${escapeAttribute(categoryName)}">
+                        <button type="button" data-action="move-finance-category" data-category="${escapeAttribute(categoryName)}" data-direction="up" aria-label="Поднять категорию ${escapeAttribute(categoryName)}" title="Поднять" ${categoryIndex === 0 ? "disabled" : ""}>↑</button>
+                        <button type="button" data-action="move-finance-category" data-category="${escapeAttribute(categoryName)}" data-direction="down" aria-label="Опустить категорию ${escapeAttribute(categoryName)}" title="Опустить" ${categoryIndex === groupedEntries.length - 1 ? "disabled" : ""}>↓</button>
+                      </span>
+                    ` : ""}
                   </div>
-                  <div class="finance-category-group__tools">
-                    ${financeState.editMode ? `<input type="color" value="${categoryColor}" data-category="${escapeAttribute(categoryName)}" data-field="categoryColor" aria-label="Цвет категории">` : ""}
-                    <span>${accounts.length} сч.</span>
-                  </div>
+                  ${financeState.editMode ? `
+                    <div class="finance-category-group__tools">
+                      <span class="finance-category-group__drop-hint">Перетащить счет сюда</span>
+                      <label class="finance-category-group__color"><span>Цвет</span><input type="color" value="${categoryColor}" data-category="${escapeAttribute(categoryName)}" data-field="categoryColor" aria-label="Цвет категории"></label>
+                    </div>
+                  ` : ""}
                 </div>
                 <div class="finance-accounts finance-sheet">
                   <div class="finance-sheet__row finance-sheet__row--head">
@@ -902,10 +1074,14 @@ function buildAccountsMarkup(accountTotals) {
               (account) => {
                 const isArchived = Boolean(account.archivedAt && account.archivedAt <= financeState.selectedDate);
                 return `
-                <div class="finance-sheet__row${isArchived ? " finance-sheet__row--archived" : ""}${financeState.editMode && !isArchived ? " finance-sheet__row--sortable" : ""}" data-account-id="${account.id}" draggable="${financeState.editMode && !isArchived ? "true" : "false"}">
+                <div class="finance-sheet__row${isArchived ? " finance-sheet__row--archived" : ""}${financeState.editMode && !isArchived ? " finance-sheet__row--sortable" : ""}" data-account-id="${account.id}">
                   <div class="finance-sheet__name">
                     <div class="finance-sheet__name-stack">
-                      <div class="finance-sheet__name-top">${isArchived ? `<span class="finance-sheet__archived-badge">Архив</span>` : '<span class="finance-sheet__archived-badge finance-sheet__archived-badge--placeholder">Архив</span>'}</div>
+                      <div class="finance-sheet__name-top">${isArchived
+                        ? '<span class="finance-sheet__archived-badge">Архив</span>'
+                        : financeState.editMode
+                          ? '<span class="finance-sheet__drag-handle" draggable="true" title="Перетащить счет">⋮⋮</span>'
+                          : '<span class="finance-sheet__archived-badge finance-sheet__archived-badge--placeholder">Архив</span>'}</div>
                       <input type="text" value="${escapeAttribute(account.name)}" data-account-id="${account.id}" data-field="name" aria-label="Название счета" ${isArchived ? "disabled" : ""}>
                     </div>
                     <div class="finance-sheet__name-stack">
@@ -967,6 +1143,69 @@ function buildAccountsMarkup(accountTotals) {
   `;
 }
 
+function buildArchiveMarkup(data) {
+  const archivedAccounts = data.accounts
+    .filter((account) => account.archivedAt)
+    .sort((left, right) => right.archivedAt.localeCompare(left.archivedAt));
+
+  return `
+    <section class="finance-card">
+      <div class="finance-card__head">
+        <div>
+          <p class="finance-card__eyebrow">История счетов</p>
+          <h3>Архив</h3>
+        </div>
+        <div class="finance-card__summary">${archivedAccounts.length} сч.</div>
+      </div>
+      ${archivedAccounts.length ? `
+        <div class="finance-sheet-wrap">
+          <div class="finance-accounts finance-sheet">
+            <div class="finance-sheet__row finance-sheet__row--head finance-sheet__row--archive">
+              <div>Счет</div>
+              <div>Сумма при закрытии</div>
+              <div>Дата</div>
+              <div>Комментарии</div>
+              <div></div>
+            </div>
+            ${archivedAccounts
+              .map((account) => {
+                const category = account.category || "Без категории";
+                const categoryMeta = getCategoryMeta(category);
+                const categoryColor = getCategoryColor(data, category);
+                const categoryTextColor = getCategoryTextColor(categoryColor);
+                const archivedAmount = getAmountAtDate(data, account, account.archivedAt);
+                const comments = Object.entries(data.comments || {})
+                  .filter(([key, comment]) => key.endsWith(`__${account.id}`) && comment)
+                  .map(([key, comment]) => ({ date: key.slice(0, 10), comment: String(comment) }))
+                  .sort((left, right) => right.date.localeCompare(left.date));
+                return `
+                  <div class="finance-sheet__row finance-sheet__row--archive" data-account-id="${account.id}">
+                    <div class="finance-archive-account">
+                      <strong>${escapeHtml(account.name)}</strong>
+                      <span><i class="finance-category-badge" style="--category-badge-color:${categoryColor};--category-badge-text:${categoryTextColor}">${categoryMeta.icon}</i>${escapeHtml(category)}</span>
+                    </div>
+                    <div class="finance-sheet__value finance-sheet__value--strong">${formatPreciseCurrency(archivedAmount)}</div>
+                    <div class="finance-sheet__value">${formatHumanDate(account.archivedAt)}</div>
+                    <div class="finance-archive-comments">
+                      ${comments.length
+                        ? comments.map((item) => `<div><time>${formatShortDate(item.date)}</time><span>${escapeHtml(item.comment)}</span></div>`).join("")
+                        : '<span class="finance-archive-comments__empty">Нет комментариев</span>'}
+                    </div>
+                    <div class="finance-sheet__actions">
+                      <button class="finance-action finance-action--ghost" type="button" data-action="restore-finance-account" data-account-id="${account.id}">Вернуть</button>
+                      <button class="finance-action finance-action--danger" type="button" data-action="delete-finance-account" data-account-id="${account.id}">Удалить</button>
+                    </div>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+        </div>
+      ` : '<div class="finance-archive__empty">Архивных счетов пока нет</div>'}
+    </section>
+  `;
+}
+
 function buildFinanceSidebar() {
   const items = [
     {
@@ -983,6 +1222,11 @@ function buildFinanceSidebar() {
       id: "accounts",
       icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h16" /></svg>',
       label: "Счета"
+    },
+    {
+      id: "archive",
+      icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4zM3 4h18v3H3zM9 11h6" /></svg>',
+      label: "Архив"
     },
     {
       id: "sales",
@@ -1066,16 +1310,27 @@ function buildStatisticsMarkup(data, accountTotals, series) {
     map.set(account.category, (map.get(account.category) || 0) + account.total);
     return map;
   }, new Map());
+  const sortedCategories = Array.from(categoryTotals.entries()).sort((left, right) => right[1] - left[1]);
   const values = series.map((item) => item.value);
   const minValue = values.length ? Math.min(...values) : 0;
   const maxValue = values.length ? Math.max(...values) : 0;
   const lastPoint = series[series.length - 1];
+  const previousPoint = series.length > 1 ? series[series.length - 2] : null;
   const totalValue = statisticsAccounts.reduce((sum, account) => sum + account.total, 0);
-  const totalDelta = statisticsAccounts.reduce((sum, account) => sum + account.delta, 0);
+  const previousValue = previousPoint?.value ?? totalValue;
+  const totalDelta = totalValue - previousValue;
+  const deltaPercent = previousValue ? (totalDelta / Math.abs(previousValue)) * 100 : 0;
   const accountsCount = statisticsAccounts.length;
-  const snapshotsCount = getSnapshotDates(data).length;
+  const snapshotDates = getSnapshotDates(data).filter((date) => date <= financeState.selectedDate);
+  const snapshotsCount = snapshotDates.length;
   const averageValue = accountsCount ? totalValue / accountsCount : 0;
-  const topCategory = Array.from(categoryTotals.entries()).sort((a, b) => b[1] - a[1])[0] || null;
+  const averageCategoryValue = categoryTotals.size ? totalValue / categoryTotals.size : 0;
+  const topCategory = sortedCategories[0] || null;
+  const topAccount = statisticsAccounts.slice().sort((left, right) => right.total - left.total)[0] || null;
+  const archivedCount = data.accounts.filter((account) => isAccountArchivedForDate(account, financeState.selectedDate)).length;
+  const historyPeriod = snapshotDates.length
+    ? `${formatShortDate(snapshotDates[0])} - ${formatShortDate(snapshotDates[snapshotDates.length - 1])}`
+    : "Нет данных";
 
   return `
     <section class="finance-card finance-card--stats">
@@ -1084,30 +1339,68 @@ function buildStatisticsMarkup(data, accountTotals, series) {
           <p class="finance-card__eyebrow">Сводка</p>
           <h3>Статистика по финансам</h3>
         </div>
+        <div class="finance-date-badge">На ${formatHumanDate(financeState.selectedDate)}</div>
+      </div>
+      <div class="finance-stats-hero">
+        <div class="finance-stats-hero__total">
+          <small>Общий капитал</small>
+          <strong>${formatCurrency(totalValue)}</strong>
+          <span class="${totalDelta > 0 ? "finance-stats-value--up" : totalDelta < 0 ? "finance-stats-value--down" : "finance-stats-value--flat"}">
+            ${totalDelta > 0 ? "+" : ""}${formatCurrency(totalDelta)} · ${deltaPercent > 0 ? "+" : ""}${formatPercent(deltaPercent)}%
+          </span>
+        </div>
+        <div class="finance-stats-hero__highlights">
+          <article>
+            <small>Крупнейшая категория</small>
+            <strong>${topCategory ? escapeHtml(topCategory[0]) : "-"}</strong>
+            <span>${topCategory ? `${formatCurrency(topCategory[1])} · ${formatPercent(totalValue ? (topCategory[1] / totalValue) * 100 : 0)}%` : "Нет данных"}</span>
+          </article>
+          <article>
+            <small>Крупнейший счет</small>
+            <strong>${topAccount ? escapeHtml(topAccount.name) : "-"}</strong>
+            <span>${topAccount ? formatCurrency(topAccount.total) : "Нет данных"}</span>
+          </article>
+          <article>
+            <small>История наблюдений</small>
+            <strong>${snapshotsCount} ${snapshotsCount === 1 ? "снимок" : "снимков"}</strong>
+            <span>${historyPeriod}</span>
+          </article>
+        </div>
+      </div>
+      <div class="finance-stats-section-head">
+        <div><small>Ключевые показатели</small><strong>Состояние портфеля</strong></div>
+        <span>${accountsCount} активных · ${archivedCount} в архиве</span>
       </div>
       <div class="finance-stats-grid">
-        <article><small>Общая сумма</small><strong>${formatCurrency(totalValue)}</strong></article>
-        <article><small>Изменение</small><strong>${formatCurrency(totalDelta)}</strong></article>
-        <article><small>Счетов</small><strong>${accountsCount}</strong></article>
-        <article><small>Категорий</small><strong>${categoryTotals.size}</strong></article>
-        <article><small>Минимум</small><strong>${formatCurrency(minValue)}</strong></article>
-        <article><small>Максимум</small><strong>${formatCurrency(maxValue)}</strong></article>
-        <article><small>Среднее на счет</small><strong>${formatCurrency(averageValue)}</strong></article>
-        <article><small>Снимков</small><strong>${snapshotsCount}</strong></article>
-        <article><small>Последний снимок</small><strong>${lastPoint ? formatHumanDate(lastPoint.date) : "-"}</strong></article>
-        <article><small>Топ категория</small><strong>${topCategory ? escapeHtml(topCategory[0]) : "-"}</strong></article>
+        <article><small>Активных счетов</small><strong>${accountsCount}</strong><span>В ${categoryTotals.size} категориях</span></article>
+        <article><small>Архивных счетов</small><strong>${archivedCount}</strong><span>История сохранена</span></article>
+        <article><small>Среднее на счет</small><strong>${formatCurrency(averageValue)}</strong><span>По активным счетам</span></article>
+        <article><small>Среднее на категорию</small><strong>${formatCurrency(averageCategoryValue)}</strong><span>Текущая структура</span></article>
+        <article><small>Минимум капитала</small><strong>${formatCurrency(minValue)}</strong><span>За всю историю</span></article>
+        <article><small>Максимум капитала</small><strong>${formatCurrency(maxValue)}</strong><span>За всю историю</span></article>
+        <article><small>Предыдущее значение</small><strong>${formatCurrency(previousValue)}</strong><span>До последнего изменения</span></article>
+        <article><small>Последний снимок</small><strong>${lastPoint ? formatShortDate(lastPoint.date) : "-"}</strong><span>${lastPoint ? formatCurrency(lastPoint.value) : "Нет данных"}</span></article>
+        <article><small>Период данных</small><strong>${historyPeriod}</strong><span>${snapshotsCount} точек наблюдения</span></article>
+      </div>
+      <div class="finance-stats-section-head finance-stats-section-head--categories">
+        <div><small>Распределение капитала</small><strong>Категории</strong></div>
+        <span>${formatCurrency(totalValue)}</span>
       </div>
       <div class="finance-category-stats">
-        ${Array.from(categoryTotals.entries())
+        ${sortedCategories
           .map(
             ([category, total]) => {
               const meta = getCategoryMeta(category);
               const categoryColor = getCategoryColor(data, category);
               const categoryTextColor = getCategoryTextColor(categoryColor);
+              const categoryAccountsCount = statisticsAccounts.filter((account) => account.category === category).length;
+              const percent = totalValue ? (total / totalValue) * 100 : 0;
               return `
-              <div class="finance-category-stats__item">
-                <span class="finance-category-stats__label"><i class="finance-category-badge" style="--category-badge-color:${categoryColor};--category-badge-text:${categoryTextColor}">${meta.icon}</i>${escapeHtml(category)}</span>
+              <div class="finance-category-stats__item" style="--category-color:${categoryColor}">
+                <div class="finance-category-stats__label"><i class="finance-category-badge" style="--category-badge-color:${categoryColor};--category-badge-text:${categoryTextColor}">${meta.icon}</i><span>${escapeHtml(category)}</span></div>
                 <strong>${formatCurrency(total)}</strong>
+                <div class="finance-category-stats__bar"><i style="--category-share:${Math.min(100, Math.max(0, percent))}%"></i></div>
+                <div class="finance-category-stats__meta"><span>${formatPercent(percent)}% капитала</span><span>${categoryAccountsCount} сч.</span></div>
               </div>
             `
             }
@@ -1138,9 +1431,10 @@ function buildChartStatsWidget(data, categoryTotals) {
   const circumference = 2 * Math.PI * radius;
   const gap = 4;
   let consumed = 0;
-  const rangeStart = getRangeStartDate(financeState.selectedDate, financeState.chartWidgetRange);
-  const startCategoryTotals = getCategoryTotalsForDate(data, rangeStart, { includeArchived: false });
-  const totalStart = Array.from(startCategoryTotals.values()).reduce((sum, value) => sum + value, 0);
+  const periodSeries = getFinanceSeries(data, financeState.chartWidgetRange);
+  const periodStart = periodSeries[0] || { value: 0, categories: {} };
+  const startCategoryTotals = new Map(Object.entries(periodStart.categories || {}));
+  const totalStart = periodStart.value;
   const periodDelta = total - totalStart;
   const rangeOptions = [
     { id: "week", label: "7д" },
@@ -1382,7 +1676,9 @@ function renderFinanceModal() {
   const totalBalance = activeAccountTotals.reduce((sum, account) => sum + account.total, 0);
   const totalDelta = activeAccountTotals.reduce((sum, account) => sum + account.delta, 0);
   const snapshotsCount = getSnapshotDates(data).length;
-  const series = getFinanceSeries(data, financeState.activeSection === "charts" ? financeState.chartRange : "all");
+  const series = getFinanceSeries(data, financeState.activeSection === "charts" ? financeState.chartRange : "all", {
+    ignoreFilters: financeState.activeSection === "statistics"
+  });
   const visibleAccounts = activeAccountTotals;
 
   body.innerHTML = `
@@ -1395,6 +1691,8 @@ function renderFinanceModal() {
             ? buildChartsMarkup(data, series, accountTotals)
             : financeState.activeSection === "statistics"
               ? buildStatisticsMarkup(data, accountTotals, series)
+            : financeState.activeSection === "archive"
+              ? buildArchiveMarkup(data)
             : financeState.activeSection === "sales"
               ? buildSalesMarkup(data)
             : buildAccountsMarkup(accountTotals)
@@ -1411,7 +1709,7 @@ function updateSelectedMonthFromDate(value) {
   financeState.currentYear = date.getFullYear();
 }
 
-function handleFinanceModalClick(event) {
+async function handleFinanceModalClick(event) {
   const actionEl = event.target.closest("[data-action]");
   if (!actionEl) return;
   const action = actionEl.dataset.action;
@@ -1490,9 +1788,21 @@ function handleFinanceModalClick(event) {
     return;
   }
 
+  if (action === "move-finance-category") {
+    const category = String(actionEl.dataset.category || "");
+    const direction = actionEl.dataset.direction;
+    const visibleCategories = [...new Set(getAccountTotals(data).map((account) => account.category || "Без категории"))]
+      .sort((left, right) => data.categoryOrder.indexOf(left) - data.categoryOrder.indexOf(right));
+    if (!moveFinanceCategory(data, category, direction, visibleCategories)) return;
+    saveFinanceData(data);
+    financeState.message = `Категория «${category}» перемещена ${direction === "up" ? "выше" : "ниже"}`;
+    renderFinanceModal();
+    return;
+  }
+
   if (action === "finance-switch-section") {
     const section = actionEl.dataset.section;
-    if (section === "charts" || section === "accounts" || section === "statistics" || section === "sales") {
+    if (section === "charts" || section === "accounts" || section === "archive" || section === "statistics" || section === "sales") {
       financeState.activeSection = section;
       renderFinanceModal();
     }
@@ -1589,8 +1899,31 @@ function handleFinanceModalClick(event) {
     }
     const account = data.accounts.find((item) => item.id === accountId);
     if (!account) return;
-    account.archivedAt = financeState.selectedDate;
-    saveFinanceData(data);
+    const comment = await showFinanceConfirm({
+      title: "Перенести счет в архив?",
+      message: `Счет «${account.name}» перестанет учитываться в текущем балансе с ${formatHumanDate(financeState.selectedDate)}.`,
+      confirmLabel: "В архив",
+      inputLabel: "Комментарий к закрытию",
+      inputPlaceholder: "Например: вклад закрыт, деньги переведены на основной счет",
+      inputValue: getAccountComment(data, financeState.selectedDate, accountId)
+    });
+    if (comment === false) return;
+    const nextData = loadFinanceData();
+    const nextAccount = nextData.accounts.find((item) => item.id === accountId);
+    if (!nextAccount) return;
+    if (nextData.accounts.filter((item) => !isAccountArchivedForDate(item, financeState.selectedDate)).length === 1) {
+      financeState.message = "Хотя бы один счет должен остаться";
+      renderFinanceModal();
+      return;
+    }
+    nextAccount.archivedAt = financeState.selectedDate;
+    const commentKey = getCommentKey(financeState.selectedDate, accountId);
+    if (comment) {
+      nextData.comments[commentKey] = comment;
+    } else {
+      delete nextData.comments[commentKey];
+    }
+    saveFinanceData(nextData);
     financeState.message = "Счет скрыт из текущих показаний, история сохранена";
     renderFinanceModal();
     return;
@@ -1600,8 +1933,17 @@ function handleFinanceModalClick(event) {
     const accountId = actionEl.dataset.accountId;
     const account = data.accounts.find((item) => item.id === accountId);
     if (!account) return;
-    account.archivedAt = "";
-    saveFinanceData(data);
+    const confirmed = await showFinanceConfirm({
+      title: "Вернуть счет?",
+      message: `Счет «${account.name}» снова появится среди активных счетов. История останется без изменений.`,
+      confirmLabel: "Вернуть"
+    });
+    if (!confirmed) return;
+    const nextData = loadFinanceData();
+    const nextAccount = nextData.accounts.find((item) => item.id === accountId);
+    if (!nextAccount) return;
+    nextAccount.archivedAt = "";
+    saveFinanceData(nextData);
     financeState.message = "Счет восстановлен из архива";
     renderFinanceModal();
     return;
@@ -1616,16 +1958,31 @@ function handleFinanceModalClick(event) {
       renderFinanceModal();
       return;
     }
-    data.accounts = data.accounts.filter((item) => item.id !== accountId);
-    Object.keys(data.snapshots || {}).forEach((date) => {
-      if (data.snapshots[date]?.[accountId] !== undefined) delete data.snapshots[date][accountId];
-      if (!Object.keys(data.snapshots[date] || {}).length) delete data.snapshots[date];
+    const confirmed = await showFinanceConfirm({
+      title: "Точно удалить счет?",
+      message: `Счет «${account.name}», все его суммы и комментарии будут удалены без возможности восстановления.`,
+      confirmLabel: "Удалить",
+      danger: true
     });
-    Object.keys(data.comments || {}).forEach((key) => {
-      if (key.endsWith(`__${accountId}`)) delete data.comments[key];
+    if (!confirmed) return;
+    const nextData = loadFinanceData();
+    const nextAccount = nextData.accounts.find((item) => item.id === accountId);
+    if (!nextAccount) return;
+    if (nextData.accounts.length === 1) {
+      financeState.message = "Нельзя удалить последний счет";
+      renderFinanceModal();
+      return;
+    }
+    nextData.accounts = nextData.accounts.filter((item) => item.id !== accountId);
+    Object.keys(nextData.snapshots || {}).forEach((date) => {
+      if (nextData.snapshots[date]?.[accountId] !== undefined) delete nextData.snapshots[date][accountId];
+      if (!Object.keys(nextData.snapshots[date] || {}).length) delete nextData.snapshots[date];
     });
-    saveFinanceData(data);
-    financeState.message = account.archivedAt ? "Архивный счет удален" : "Счет удален";
+    Object.keys(nextData.comments || {}).forEach((key) => {
+      if (key.endsWith(`__${accountId}`)) delete nextData.comments[key];
+    });
+    saveFinanceData(nextData);
+    financeState.message = nextAccount.archivedAt ? "Архивный счет удален" : "Счет удален";
     renderFinanceModal();
     return;
   }
@@ -1687,7 +2044,25 @@ function handleFinanceModalChange(event) {
     account.name = String(event.target.value || "").trim() || account.name;
   }
   if (field === "category") {
-    account.category = String(event.target.value || "").trim() || "Без категории";
+    const previousCategory = account.category;
+    const nextCategory = String(event.target.value || "").trim() || "Без категории";
+    if (previousCategory !== nextCategory) {
+      const order = Array.isArray(data.categoryOrder) ? data.categoryOrder : [];
+      const previousIndex = order.indexOf(previousCategory);
+      const nextIndex = order.indexOf(nextCategory);
+      const hasOtherPreviousAccounts = data.accounts.some((item) => item.id !== account.id && item.category === previousCategory);
+      if (!hasOtherPreviousAccounts && previousIndex !== -1) {
+        if (nextIndex === -1) {
+          order[previousIndex] = nextCategory;
+        } else {
+          order.splice(previousIndex, 1);
+        }
+      } else if (nextIndex === -1) {
+        order.splice(previousIndex === -1 ? order.length : previousIndex + 1, 0, nextCategory);
+      }
+      data.categoryOrder = order;
+      account.category = nextCategory;
+    }
   }
   if (field === "openingBalance") {
     account.openingBalance = Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0;
@@ -1732,8 +2107,9 @@ function handleFinanceModalInput(event) {
 }
 
 function handleFinanceModalDragStart(event) {
-  const row = event.target.closest(".finance-sheet__row--sortable[data-account-id]");
-  if (!row || !financeState.editMode) return;
+  const handle = event.target.closest(".finance-sheet__drag-handle[draggable=\"true\"]");
+  const row = handle?.closest(".finance-sheet__row--sortable[data-account-id]");
+  if (!handle || !row || !financeState.editMode) return;
   financeState.draggingAccountId = row.dataset.accountId || null;
   row.classList.add("finance-sheet__row--dragging");
   if (event.dataTransfer) {
@@ -1743,28 +2119,48 @@ function handleFinanceModalDragStart(event) {
 }
 
 function handleFinanceModalDragOver(event) {
-  const row = event.target.closest(".finance-sheet__row--sortable[data-account-id]");
-  if (!row || !financeState.draggingAccountId || row.dataset.accountId === financeState.draggingAccountId) return;
+  const group = event.target.closest(".finance-category-group[data-category]");
+  if (!group || !financeState.draggingAccountId) return;
   event.preventDefault();
-  document.querySelectorAll(".finance-sheet__row--drag-over").forEach((element) => {
-    if (element !== row) element.classList.remove("finance-sheet__row--drag-over");
-  });
-  row.classList.add("finance-sheet__row--drag-over");
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+
+  const row = event.target.closest(".finance-sheet__row--sortable[data-account-id]");
+  clearFinanceDropTargets();
+  if (row?.dataset.accountId === financeState.draggingAccountId) return;
+  if (row) {
+    const position = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2 ? "after" : "before";
+    row.classList.add(position === "after" ? "finance-sheet__row--drag-after" : "finance-sheet__row--drag-before");
+    return;
+  }
+
+  group.classList.add("finance-category-group--drag-over");
 }
 
 function handleFinanceModalDrop(event) {
-  const row = event.target.closest(".finance-sheet__row--sortable[data-account-id]");
-  if (!row || !financeState.draggingAccountId) return;
+  const group = event.target.closest(".finance-category-group[data-category]");
+  if (!group || !financeState.draggingAccountId) return;
   event.preventDefault();
+
+  const row = event.target.closest(".finance-sheet__row--sortable[data-account-id]");
   const sourceId = financeState.draggingAccountId;
-  const targetId = row.dataset.accountId || "";
+  const targetId = row?.dataset.accountId || "";
+  if (targetId === sourceId) {
+    clearFinanceDragState();
+    return;
+  }
+  const position = row?.classList.contains("finance-sheet__row--drag-after") ? "after" : "before";
+  const targetCategory = group.dataset.category || "Без категории";
   const data = loadFinanceData();
+  const sourceAccount = data.accounts.find((account) => account.id === sourceId);
+  const previousCategory = sourceAccount?.category;
 
   clearFinanceDragState();
-  if (!moveAccountBeforeTarget(data, sourceId, targetId)) return;
+  if (!moveFinanceAccount(data, sourceId, { targetId, position, category: targetCategory })) return;
 
   saveFinanceData(data);
-  financeState.message = "Порядок счетов обновлен";
+  financeState.message = previousCategory === sourceAccount.category
+    ? "Порядок счетов обновлен"
+    : `Счет перенесен в категорию «${sourceAccount.category}»`;
   renderFinanceModal();
 }
 
