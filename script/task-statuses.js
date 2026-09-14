@@ -47,6 +47,7 @@ const SUMMARY_STATUS_ICONS = {
   star: "⭐"
 };
 const URGENT_FILTER_KEY = "space_tab_task_urgent_filter_v1";
+const COLLAPSED_STATUSES_KEY = "space_tab_task_collapsed_statuses_v1";
 const REMINDER_DAYS = [
   { value: 1, label: "Пн" },
   { value: 2, label: "Вт" },
@@ -99,7 +100,7 @@ let markerPickerOpen = false;
 let activeMarkdownLink = null;
 let markdownLinkDialogState = null;
 let markdownLinkPreviewTimer = null;
-const collapsedStatuses = new Set();
+const collapsedStatuses = loadCollapsedStatuses();
 const pendingStatusFields = new Set();
 const pendingTaskFields = new Set();
 const pendingLinkFields = new Set();
@@ -112,6 +113,19 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function loadCollapsedStatuses() {
+  try {
+    const statusIds = JSON.parse(localStorage.getItem(COLLAPSED_STATUSES_KEY) || "[]");
+    return new Set(Array.isArray(statusIds) ? statusIds.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedStatuses() {
+  localStorage.setItem(COLLAPSED_STATUSES_KEY, JSON.stringify([...collapsedStatuses]));
 }
 
 function iconSvg(icon, size = 18) {
@@ -700,7 +714,7 @@ function renderTaskRow(task) {
 
 function renderStatusSection(status) {
   const tasks = orderedTasksForStatus(status.id);
-  const collapsed = collapsedStatuses.has(status.id);
+  const collapsed = !tasks.length || collapsedStatuses.has(status.id);
   const emptyContent = showUrgentOnly
     ? '<div class="task-board__empty-state">Нет срочных задач</div>'
     : searchQuery
@@ -1064,7 +1078,9 @@ function attachBoardEvents(modal) {
     if (action === "open-task") openTask(taskId);
     if (action === "create-task") createTask(statusId);
     if (action === "toggle-status") {
+      if (!orderedTasksForStatus(statusId).length) return;
       collapsedStatuses.has(statusId) ? collapsedStatuses.delete(statusId) : collapsedStatuses.add(statusId);
+      saveCollapsedStatuses();
       renderBoardContent();
     }
     if (action === "filter-status") {
@@ -1154,6 +1170,8 @@ function attachBoardEvents(modal) {
       board.tasks.forEach((task) => {
         if (task.statusId === statusId) task.statusId = board.statuses[0].id;
       });
+      collapsedStatuses.delete(statusId);
+      saveCollapsedStatuses();
       if (selectedStatusId === statusId) selectedStatusId = "";
       persistNow();
     }
