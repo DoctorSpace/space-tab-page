@@ -650,7 +650,7 @@ function matchesSearch(task) {
 function matchesUrgentFilter(task) {
   if (!showUrgentOnly) return true;
   const dueState = getDueState(task);
-  return task.attention || dueState?.type === "today" || dueState?.type === "overdue";
+  return task.attention || dueState?.type === "today" || dueState?.type === "tomorrow" || dueState?.type === "overdue";
 }
 
 function orderedTasksForStatus(statusId) {
