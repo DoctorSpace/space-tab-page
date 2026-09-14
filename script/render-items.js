@@ -26,6 +26,7 @@ import {
   getBodyMetricsStateForSync,
   initBodyMetrics
 } from "./body-metrics.js";
+import { applyTaskBoardStateFromSync, getTaskBoardStateForSync } from "./task-status-data.js";
 
 const app = document.getElementById("app");
 let currentMode = "default";
@@ -35,6 +36,7 @@ let editMode = false;
 let editingItem = null;
 let linksState = loadLinksState();
 let driveSyncRunning = false;
+let driveLoadRunning = false;
 let driveConnected = false;
 let driveAutoSyncTimer = null;
 let headerRef = null;
@@ -892,7 +894,8 @@ function buildDrivePayload() {
     habits: getHabitsState(),
     notes: getNotesState(),
     noteGroups: getNoteGroupsState(),
-    noteGroupOrder: getNoteGroupOrderState()
+    noteGroupOrder: getNoteGroupOrderState(),
+    taskBoard: getTaskBoardStateForSync()
   };
 }
 
@@ -1067,7 +1070,7 @@ function confirmSaveModal() {
 }
 
 async function syncToDrive({ interactive, notify = false }) {
-  if (driveSyncRunning) return;
+  if (driveSyncRunning || driveLoadRunning) return;
 
   if (!hasGoogleIdentityAuth()) {
     setDriveButtonState({ error: true, connected: false });
@@ -1121,11 +1124,17 @@ async function syncToDrive({ interactive, notify = false }) {
 }
 
 async function loadFromDrive({ interactive }) {
+  if (driveLoadRunning || driveSyncRunning) return;
   if (!hasGoogleIdentityAuth()) {
     showSyncToast("Google auth недоступен", "error");
     return;
   }
 
+  const taskStatusesRestoreStarted = new CustomEvent("space-tab:task-statuses-restore-started", {
+    cancelable: true
+  });
+  if (!window.dispatchEvent(taskStatusesRestoreStarted)) return;
+  driveLoadRunning = true;
   try {
     setRequestStatus("loading", "Загружаем данные из Google Drive...");
     let token = await getGoogleAuthToken(interactive);
@@ -1157,6 +1166,7 @@ async function loadFromDrive({ interactive }) {
     }
 
     let notesRestoreSkipped = false;
+    let taskBoardRestoreSkipped = false;
     if (result.data.links) {
       linksState = result.data.links;
       saveLinksState(linksState);
@@ -1188,6 +1198,18 @@ async function loadFromDrive({ interactive }) {
         notesRestoreSkipped = true;
       }
     }
+    if (result.data.taskBoard) {
+      const beforeTaskBoardRestore = new CustomEvent("space-tab:before-task-statuses-restore", {
+        detail: { confirmation: null }
+      });
+      window.dispatchEvent(beforeTaskBoardRestore);
+      const canRestoreTaskBoard = await (beforeTaskBoardRestore.detail.confirmation ?? true);
+      if (canRestoreTaskBoard) {
+        applyTaskBoardStateFromSync(result.data.taskBoard);
+      } else {
+        taskBoardRestoreSkipped = true;
+      }
+    }
     if (bodyMetricsResult?.data) {
       applyBodyMetricsStateFromSync(bodyMetricsResult.data);
     } else if (result.data.bodyMetrics) {
@@ -1203,13 +1225,18 @@ async function loadFromDrive({ interactive }) {
     initFinance();
     setRequestStatus("success", "Загрузка из Google Drive завершена");
     showSyncToast(
-      notesRestoreSkipped ? "Данные загружены, открытая заметка оставлена без изменений" : "Файл загружен из Google Drive",
+      notesRestoreSkipped || taskBoardRestoreSkipped
+        ? "Данные загружены, открытые черновики оставлены без изменений"
+        : "Файл загружен из Google Drive",
       "success"
     );
   } catch (error) {
     console.error("Drive load failed", error);
     setRequestStatus("error", "Ошибка загрузки из Google Drive");
     showSyncToast("Ошибка загрузки из Google Drive", "error");
+  } finally {
+    driveLoadRunning = false;
+    window.dispatchEvent(new CustomEvent("space-tab:task-statuses-restore-finished"));
   }
 }
 
@@ -1317,6 +1344,7 @@ function createLinksNav() {
       updateModeTabsState();
       renderCategories();
       localStorage.setItem("linkMode", currentMode);
+      window.dispatchEvent(new CustomEvent("space-tab:link-mode-changed", { detail: { mode: currentMode } }));
       return;
     }
 
@@ -2346,6 +2374,7 @@ function init() {
   linksNavRef = linksNav;
   updateEditControlsState();
   updateModeTabsState();
+  window.dispatchEvent(new CustomEvent("space-tab:link-mode-changed", { detail: { mode: currentMode } }));
 
   initDriveButtonState();
 
