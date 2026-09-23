@@ -98,12 +98,12 @@ function sanitizeResponsibles(responsibles) {
 function getTrackerUrl(code) {
   const normalizedCode = String(code || "").trim().toUpperCase();
   return /^(ONBL|WBF)-[0-9]+$/.test(normalizedCode)
-    ? `https://tracker.wb.ru/issue/${normalizedCode}`
+    ? `https://tracker.wb.ru/i/DBOUL/${normalizedCode}`
     : "";
 }
 
 function isGeneratedTrackerUrl(url) {
-  return /^https:\/\/tracker\.wb\.ru\/issue\/(ONBL|WBF)-[0-9]+\/?$/i.test(String(url || "").trim());
+  return /^https:\/\/tracker\.wb\.ru\/(?:issue|i\/DBOUL)\/(ONBL|WBF)-[0-9]+\/?$/i.test(String(url || "").trim());
 }
 
 export function createDefaultTaskBoard() {

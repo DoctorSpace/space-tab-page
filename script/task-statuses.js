@@ -199,7 +199,7 @@ function updateTaskMarkerControls() {
 function syncTrackerLink(task) {
   const normalizedCode = String(task?.code || "").trim().toUpperCase();
   const trackerUrl = /^(ONBL|WBF)-[0-9]+$/.test(normalizedCode)
-    ? `https://tracker.wb.ru/issue/${normalizedCode}`
+    ? `https://tracker.wb.ru/i/DBOUL/${normalizedCode}`
     : "";
   let trackerLink = task.links.find((link) => link.label.trim().toLocaleLowerCase("ru") === "tracker");
   if (trackerUrl && !trackerLink) {
@@ -208,7 +208,7 @@ function syncTrackerLink(task) {
     task.links.push(trackerLink);
   }
   if (trackerLink && trackerUrl) trackerLink.url = trackerUrl;
-  else if (trackerLink && /^https:\/\/tracker\.wb\.ru\/issue\/(ONBL|WBF)-[0-9]+\/?$/i.test(trackerLink.url)) {
+  else if (trackerLink && /^https:\/\/tracker\.wb\.ru\/(?:issue|i\/DBOUL)\/(ONBL|WBF)-[0-9]+\/?$/i.test(trackerLink.url)) {
     trackerLink.url = "";
   }
   return trackerLink || null;
