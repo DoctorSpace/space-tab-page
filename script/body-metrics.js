@@ -356,9 +356,9 @@ function buildChart(data, key, unit, color) {
   const series = getVisibleSeries(getMetricSeries(data, key));
   if (!series.length) return '<div class="body-metrics-chart__empty">Пока нет данных для графика</div>';
 
-  const width = 760;
-  const height = 250;
-  const padding = { top: 20, right: 24, bottom: 38, left: 58 };
+  const width = 380;
+  const height = 220;
+  const padding = { top: 24, right: 16, bottom: 32, left: 48 };
   const values = series.map((point) => point.value);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
@@ -386,14 +386,28 @@ function buildChart(data, key, unit, color) {
   const dates = points.map((point, index) => labelIndexes.has(index)
     ? `<text x="${point.x}" y="${height - 8}" text-anchor="middle">${formatShortDate(point.date)}</text>`
     : "").join("");
-  const dots = points.map((point) => `
-    <circle cx="${point.x}" cy="${point.y}" r="5" tabindex="0">
-      <title>${formatHumanDate(point.date)}: ${formatValue(point.value, fractionDigits)} ${unit}</title>
-    </circle>
-  `).join("");
+  const dots = points.map((point) => {
+    const tooltipX = Math.max(4, Math.min(point.x - 68, width - 140));
+    const tooltipY = point.y >= 78 ? point.y - 62 : point.y + 16;
+    const date = formatHumanDate(point.date);
+    const value = `${formatValue(point.value, fractionDigits)} ${unit}`;
+    return `
+      <g class="body-metrics-chart__point">
+        <circle class="body-metrics-chart__dot" cx="${point.x}" cy="${point.y}" r="4.5"></circle>
+        <circle class="body-metrics-chart__hit" cx="${point.x}" cy="${point.y}" r="${points.length > 12 ? 7 : 11}" tabindex="0" aria-label="${date}: ${value}"></circle>
+        <g class="body-metrics-chart__tooltip" transform="translate(${tooltipX} ${tooltipY})" aria-hidden="true">
+          <rect width="136" height="44" rx="8"></rect>
+          <text x="9" y="17">${date}</text>
+          <text class="body-metrics-chart__tooltip-value" x="9" y="34">${value}</text>
+        </g>
+      </g>
+    `;
+  }).join("");
+  const latest = points.at(-1);
+  const latestValue = `<text class="body-metrics-chart__latest" x="${latest.x - 9}" y="${latest.y - 12}" text-anchor="end">${formatValue(latest.value, fractionDigits)} ${unit}</text>`;
 
   return `
-    <svg class="body-metrics-chart__svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="График: ${unit}">
+    <svg class="body-metrics-chart__svg" viewBox="0 0 ${width} ${height}" role="group" aria-label="График: ${unit}">
       <defs>
         <linearGradient id="metrics-gradient-${key}" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="${color}" stop-opacity="0.3"></stop>
@@ -403,7 +417,7 @@ function buildChart(data, key, unit, color) {
       <g class="body-metrics-chart__grid">${grid}</g>
       <path class="body-metrics-chart__area" d="${area}" fill="url(#metrics-gradient-${key})"></path>
       <path class="body-metrics-chart__line" d="${line}" style="--chart-color:${color}"></path>
-      <g class="body-metrics-chart__dots" style="--chart-color:${color}">${dots}</g>
+      <g class="body-metrics-chart__dots" style="--chart-color:${color}">${latestValue}${dots}</g>
       <g class="body-metrics-chart__dates">${dates}</g>
     </svg>
   `;

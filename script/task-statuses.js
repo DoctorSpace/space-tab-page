@@ -1,6 +1,8 @@
 import {
+  DONE_STATUS_ID,
   TASK_STATUS_STORAGE_KEY,
   loadTaskBoard,
+  makeSprint,
   makeStatus,
   makeTask,
   makeTaskLink,
@@ -48,6 +50,8 @@ const SUMMARY_STATUS_ICONS = {
 };
 const URGENT_FILTER_KEY = "space_tab_task_urgent_filter_v1";
 const COLLAPSED_STATUSES_KEY = "space_tab_task_collapsed_statuses_v1";
+const COLLAPSED_SPRINTS_KEY = "space_tab_task_collapsed_sprints_v1";
+const UNASSIGNED_SPRINT_ID = "without-sprint";
 const REMINDER_DAYS = [
   { value: 1, label: "Пн" },
   { value: 2, label: "Вт" },
@@ -100,7 +104,9 @@ let markerPickerOpen = false;
 let activeMarkdownLink = null;
 let markdownLinkDialogState = null;
 let markdownLinkPreviewTimer = null;
+let sprintEditor = null;
 const collapsedStatuses = loadCollapsedStatuses();
+const collapsedSprints = loadCollapsedSprints();
 const pendingStatusFields = new Set();
 const pendingTaskFields = new Set();
 const pendingLinkFields = new Set();
@@ -126,6 +132,19 @@ function loadCollapsedStatuses() {
 
 function saveCollapsedStatuses() {
   localStorage.setItem(COLLAPSED_STATUSES_KEY, JSON.stringify([...collapsedStatuses]));
+}
+
+function loadCollapsedSprints() {
+  try {
+    const ids = JSON.parse(localStorage.getItem(COLLAPSED_SPRINTS_KEY) || "[]");
+    return new Set(Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedSprints() {
+  localStorage.setItem(COLLAPSED_SPRINTS_KEY, JSON.stringify([...collapsedSprints]));
 }
 
 function iconSvg(icon, size = 18) {
@@ -559,6 +578,7 @@ function formatDueDate(value) {
 }
 
 function getDueState(task) {
+  if (task?.statusId === DONE_STATUS_ID) return null;
   const targetDay = dateToDayNumber(task?.dueDate);
   if (targetDay === null) return null;
   const daysLeft = targetDay - todayDayNumber();
@@ -570,6 +590,7 @@ function getDueState(task) {
 
 function getDueSummary() {
   return board.tasks.reduce((summary, task) => {
+    if (task.statusId === DONE_STATUS_ID) return summary;
     const dueState = getDueState(task);
     if (dueState?.attention) summary[dueState.type] += 1;
     if (task.attention) summary.marked += 1;
@@ -600,7 +621,8 @@ function isReminderDay(date) {
 
 function getTasksWithoutTodayUpdate() {
   const today = localDateStamp();
-  return board.tasks.filter((task) => task.dailyUpdateDate !== today || !String(task.dailyUpdate || "").trim());
+  return board.tasks.filter((task) => task.statusId !== DONE_STATUS_ID
+    && (task.dailyUpdateDate !== today || !String(task.dailyUpdate || "").trim()));
 }
 
 function showDailyUpdateReminder() {
@@ -642,7 +664,7 @@ function renderLauncher() {
   if (host.hidden) return;
 
   const dueSummary = getDueSummary();
-  const attentionCount = board.tasks.filter((task) => task.attention || getDueState(task)?.attention).length;
+  const attentionCount = board.tasks.filter((task) => task.statusId !== DONE_STATUS_ID && (task.attention || getDueState(task)?.attention)).length;
   const badgeState = dueSummary.marked ? "attention" : dueSummary.overdue ? "overdue" : dueSummary.today ? "today" : "tomorrow";
   const badgeTitle = `Требуют внимания: ${dueSummary.marked} · Просрочено: ${dueSummary.overdue} · Сегодня: ${dueSummary.today} · Завтра: ${dueSummary.tomorrow}`;
   host.innerHTML = `
@@ -658,11 +680,13 @@ function renderLauncher() {
 function matchesSearch(task) {
   if (!searchQuery) return true;
   const links = task.links.map((link) => `${link.label} ${link.url}`).join(" ");
-  return `${task.code} ${task.title} ${task.description} ${links}`.toLocaleLowerCase("ru").includes(searchQuery);
+  const sprint = board.sprints.find((item) => item.id === task.sprintId)?.name || "";
+  return `${task.code} ${task.title} ${task.description} ${links} ${sprint}`.toLocaleLowerCase("ru").includes(searchQuery);
 }
 
 function matchesUrgentFilter(task) {
   if (!showUrgentOnly) return true;
+  if (task.statusId === DONE_STATUS_ID) return false;
   const dueState = getDueState(task);
   return task.attention || dueState?.type === "today" || dueState?.type === "tomorrow" || dueState?.type === "overdue";
 }
@@ -703,7 +727,7 @@ function renderTaskRow(task) {
           ${task.code ? `<span class="task-board__code">${escapeHtml(task.code)}</span>` : ""}
           <strong>${escapeHtml(task.title || "Без названия")}</strong>
         </div>
-        ${parent && parent.statusId !== task.statusId ? `<span class="task-board__parent-note">Подзадача: ${escapeHtml(parent.title)}</span>` : ""}
+        ${parent && (parent.statusId !== task.statusId || parent.sprintId !== task.sprintId) ? `<span class="task-board__parent-note">Подзадача: ${escapeHtml(parent.title)}</span>` : ""}
         ${task.description ? `<p>${escapeHtml(task.description).replace(/\n+/g, " ")}</p>` : ""}
       </div>
       ${dueState || links.length ? `<div class="task-board__meta">${dueState ? `<span class="task-board__due task-board__due--${dueState.type}" title="Срок: ${escapeHtml(formatDueDate(task.dueDate))}">${iconSvg("clock", 14)}${escapeHtml(dueState.label)}</span>` : ""}${links.length ? `<div class="task-board__links">${links.slice(0, 4).map((link) => `<a href="${escapeHtml(safeUrl(link.url))}" target="_blank" rel="noopener noreferrer" data-stop-open>${escapeHtml(link.label || "Ссылка")}</a>`).join("")}</div>` : ""}</div>` : ""}
@@ -712,9 +736,53 @@ function renderTaskRow(task) {
   `;
 }
 
+function renderSprintGroup(sprint, tasks) {
+  const sprintId = sprint?.id || UNASSIGNED_SPRINT_ID;
+  const collapsed = collapsedSprints.has(sprintId);
+  return `
+    <section class="task-board__sprint ${collapsed ? "task-board__sprint--collapsed" : ""}" data-drop-sprint="${escapeHtml(sprint?.id || "")}" data-drop-status="${DONE_STATUS_ID}">
+      <div class="task-board__sprint-head">
+        <button class="task-board__sprint-toggle" type="button" data-action="toggle-sprint" data-sprint-id="${escapeHtml(sprintId)}" aria-expanded="${!collapsed}">
+          <span class="task-board__sprint-chevron">${iconSvg("chevron", 15)}</span>
+          <strong>${escapeHtml(sprint?.name || "Без спринта")}</strong>
+          <span class="task-board__sprint-count">${tasks.length}</span>
+        </button>
+        ${sprint ? `
+          <button class="task-board__sprint-icon" type="button" data-action="edit-sprint" data-sprint-id="${escapeHtml(sprint.id)}" title="Переименовать спринт" aria-label="Переименовать спринт ${escapeHtml(sprint.name)}">✎</button>
+          <button class="task-board__sprint-icon task-board__sprint-icon--danger" type="button" data-action="delete-sprint" data-sprint-id="${escapeHtml(sprint.id)}" title="Удалить спринт" aria-label="Удалить спринт ${escapeHtml(sprint.name)}">×</button>
+        ` : ""}
+      </div>
+      <div class="task-board__sprint-tasks" ${collapsed ? "hidden" : ""}>
+        ${tasks.length ? tasks.map(renderTaskRow).join("") : sprint
+          ? '<div class="task-board__sprint-empty">Задач пока нет</div>'
+          : `<button class="task-board__empty" type="button" data-action="create-task" data-status-id="${DONE_STATUS_ID}">+ Добавить задачу</button>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderDoneTasks(tasks) {
+  if (!tasks.length && (searchQuery || showUrgentOnly)) {
+    return `<div class="task-board__empty-state">${showUrgentOnly ? "Нет срочных задач" : "Ничего не найдено"}</div>`;
+  }
+  return `
+    <div class="task-board__sprint-toolbar">
+      ${sprintEditor ? `
+        <form class="task-board__sprint-form" data-sprint-form>
+          <label class="task-board__field"><span>${sprintEditor.id ? "Переименовать спринт" : "Новый спринт"}</span><input type="text" maxlength="80" required data-sprint-name value="${escapeHtml(sprintEditor.name)}" placeholder="Название спринта"></label>
+          <button class="task-board__secondary" type="submit">Сохранить</button>
+          <button class="task-board__sprint-icon" type="button" data-action="cancel-sprint" aria-label="Отмена">×</button>
+        </form>
+      ` : '<button class="task-board__secondary" type="button" data-action="add-sprint">+ Спринт</button>'}
+    </div>
+    ${renderSprintGroup(null, tasks.filter((task) => !task.sprintId))}
+    ${board.sprints.map((sprint) => renderSprintGroup(sprint, tasks.filter((task) => task.sprintId === sprint.id))).join("")}
+  `;
+}
+
 function renderStatusSection(status) {
   const tasks = orderedTasksForStatus(status.id);
-  const collapsed = !tasks.length || collapsedStatuses.has(status.id);
+  const collapsed = (!tasks.length && status.id !== DONE_STATUS_ID) || collapsedStatuses.has(status.id);
   const emptyContent = showUrgentOnly
     ? '<div class="task-board__empty-state">Нет срочных задач</div>'
     : searchQuery
@@ -729,7 +797,7 @@ function renderStatusSection(status) {
         <span class="task-board__count">${tasks.length}</span>
       </button>
       <div class="task-board__task-list" data-drop-status="${escapeHtml(status.id)}">
-        ${tasks.length ? tasks.map(renderTaskRow).join("") : emptyContent}
+        ${status.id === DONE_STATUS_ID ? renderDoneTasks(tasks) : tasks.length ? tasks.map(renderTaskRow).join("") : emptyContent}
       </div>
     </section>
   `;
@@ -750,14 +818,14 @@ function renderStatusEditor() {
                 <div class="task-status-edit__top">
                   <span class="task-status-edit__drag" draggable="true" data-status-drag="${escapeHtml(status.id)}" title="Перетащить статус" aria-label="Перетащить статус">⠿</span>
                   <div class="task-status-edit__icon-picker">
-                    <button type="button" class="task-status-edit__preview" data-action="toggle-status-icon-picker" data-status-id="${escapeHtml(status.id)}" title="Изменить иконку" aria-expanded="false">${iconSvg(status.icon, 19)}</button>
+                    <button type="button" class="task-status-edit__preview" data-action="toggle-status-icon-picker" data-status-id="${escapeHtml(status.id)}" title="${status.id === DONE_STATUS_ID ? "Обязательный статус" : "Изменить иконку"}" aria-expanded="false" ${status.id === DONE_STATUS_ID ? "disabled" : ""}>${iconSvg(status.icon, 19)}</button>
                     <div class="task-status-edit__icons" data-status-icon-options="${escapeHtml(status.id)}" role="radiogroup" aria-label="Иконка статуса" hidden>
                       ${ICONS.map((icon) => `<button type="button" class="task-status-edit__icon ${status.icon === icon.id ? "task-status-edit__icon--active" : ""}" data-action="set-status-icon" data-status-id="${escapeHtml(status.id)}" data-icon="${icon.id}" title="${icon.label}">${iconSvg(icon.id, 17)}</button>`).join("")}
                     </div>
                   </div>
-                  <label class="task-board__field task-board__field--grow"><span>Название</span><input type="text" value="${escapeHtml(status.name)}" maxlength="60" data-status-field="name" data-status-id="${escapeHtml(status.id)}"></label>
+                  <label class="task-board__field task-board__field--grow"><span>Название</span><input type="text" value="${escapeHtml(status.name)}" maxlength="60" data-status-field="name" data-status-id="${escapeHtml(status.id)}" ${status.id === DONE_STATUS_ID ? 'disabled title="Обязательный статус"' : ""}></label>
                   <label class="task-status-edit__color" title="Цвет"><input type="color" value="${escapeHtml(status.color)}" data-status-field="color" data-status-id="${escapeHtml(status.id)}"><span style="background:${escapeHtml(status.color)}"></span></label>
-                  <button type="button" class="task-board__icon-btn task-board__icon-btn--danger" data-action="delete-status" data-status-id="${escapeHtml(status.id)}" title="Удалить статус" ${board.statuses.length === 1 ? "disabled" : ""}>×</button>
+                  <button type="button" class="task-board__icon-btn task-board__icon-btn--danger" data-action="delete-status" data-status-id="${escapeHtml(status.id)}" title="${status.id === DONE_STATUS_ID ? "Обязательный статус" : "Удалить статус"}" ${status.id === DONE_STATUS_ID || board.statuses.length === 1 ? "disabled" : ""}>×</button>
                 </div>
                 <label class="task-board__field"><span>Описание статуса</span><input type="text" value="${escapeHtml(status.description)}" maxlength="300" placeholder="Например: ждём макет от дизайнера" data-status-field="description" data-status-id="${escapeHtml(status.id)}"></label>
               </section>
@@ -856,6 +924,7 @@ function closeBoard() {
   flushPendingSave();
   document.getElementById("task-status-modal")?.remove();
   editingStatuses = false;
+  sprintEditor = null;
   selectedStatusId = "";
   searchQuery = "";
 }
@@ -909,6 +978,17 @@ function renderTaskDetail() {
           <label class="task-board__field task-board__field--grow"><span>Родительская задача</span><select data-task-field="parentId"><option value="">Нет, это общая задача</option>${parentOptions(taskDraft).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === taskDraft.parentId ? "selected" : ""}>${escapeHtml(item.code ? `${item.code} · ${item.title}` : item.title)}</option>`).join("")}</select></label>
           <label class="task-board__field task-board__field--date"><span>Срок</span><input type="date" value="${escapeHtml(taskDraft.dueDate)}" data-task-field="dueDate"></label>
         </div>
+        ${taskDraft.statusId === DONE_STATUS_ID ? `
+          <div class="task-detail__row task-detail__sprint-row">
+            <label class="task-board__field task-board__field--grow"><span>Спринт</span><select data-task-field="sprintId"><option value="">Без спринта</option>${board.sprints.map((sprint) => `<option value="${escapeHtml(sprint.id)}" ${sprint.id === taskDraft.sprintId ? "selected" : ""}>${escapeHtml(sprint.name)}</option>`).join("")}</select></label>
+            <button class="task-board__secondary" type="button" data-action="show-task-sprint-form">+ Новый спринт</button>
+          </div>
+          <form class="task-detail__sprint-form" data-task-sprint-form hidden>
+            <label class="task-board__field task-board__field--grow"><span>Название нового спринта</span><input type="text" maxlength="80" required data-sprint-name placeholder="Например: Спринт 1"></label>
+            <button class="task-board__secondary" type="submit">Создать</button>
+            <button class="task-board__sprint-icon" type="button" data-action="hide-task-sprint-form" aria-label="Отмена">×</button>
+          </form>
+        ` : ""}
         <div class="task-board__field task-detail__markdown-field">
           <span class="task-detail__markdown-head"><span>Описание</span><button type="button" data-action="add-markdown-link" data-markdown-field="description">+ Ссылка</button></span>
           <div class="task-detail__markdown-editor task-detail__markdown-editor--description" contenteditable="true" role="textbox" aria-multiline="true" data-markdown-field="description" data-placeholder="Контекст, текущее состояние и важные детали..." spellcheck="true">${renderMarkdownEditor(taskDraft.description)}</div>
@@ -1036,11 +1116,12 @@ function confirmStatusDelete(status) {
   });
 }
 
-function moveTask(taskId, statusId, beforeTaskId = "") {
+function moveTask(taskId, statusId, beforeTaskId = "", sprintId = "") {
   const fromIndex = board.tasks.findIndex((task) => task.id === taskId);
   if (fromIndex < 0 || !getStatus(statusId)) return;
   const [task] = board.tasks.splice(fromIndex, 1);
   task.statusId = statusId;
+  task.sprintId = statusId === DONE_STATUS_ID && board.sprints.some((sprint) => sprint.id === sprintId) ? sprintId : "";
   task.updatedAt = Date.now();
   const beforeIndex = beforeTaskId ? board.tasks.findIndex((item) => item.id === beforeTaskId) : -1;
   if (beforeIndex >= 0) board.tasks.splice(beforeIndex, 0, task);
@@ -1061,6 +1142,14 @@ function moveStatus(statusId, targetStatusId, placeAfter) {
   persistNow();
 }
 
+function validatedSprintName(input, editingId = "") {
+  const name = input.value.trim();
+  const duplicate = board.sprints.some((sprint) => sprint.id !== editingId && sprint.name.toLocaleLowerCase("ru") === name.toLocaleLowerCase("ru"));
+  input.setCustomValidity(!name ? "Введите название спринта" : duplicate ? "Спринт с таким названием уже есть" : "");
+  if (!input.reportValidity()) return "";
+  return name;
+}
+
 function attachBoardEvents(modal) {
   modal.addEventListener("click", async (event) => {
     if (event.target.closest("[data-stop-open]")) return;
@@ -1071,17 +1160,56 @@ function attachBoardEvents(modal) {
       return;
     }
     if (!actionTarget) return;
-    const { action, taskId, statusId, linkId, responsibleId, icon, markerIcon, markdownField } = actionTarget.dataset;
+    const { action, taskId, statusId, sprintId, linkId, responsibleId, icon, markerIcon, markdownField } = actionTarget.dataset;
 
     if (action === "close-board") closeBoard();
     if (action === "close-task") closeTaskDetail();
     if (action === "open-task") openTask(taskId);
     if (action === "create-task") createTask(statusId);
     if (action === "toggle-status") {
-      if (!orderedTasksForStatus(statusId).length) return;
+      if (statusId !== DONE_STATUS_ID && !orderedTasksForStatus(statusId).length) return;
       collapsedStatuses.has(statusId) ? collapsedStatuses.delete(statusId) : collapsedStatuses.add(statusId);
       saveCollapsedStatuses();
       renderBoardContent();
+    }
+    if (action === "toggle-sprint") {
+      collapsedSprints.has(sprintId) ? collapsedSprints.delete(sprintId) : collapsedSprints.add(sprintId);
+      saveCollapsedSprints();
+      renderBoardContent();
+    }
+    if (action === "add-sprint" || action === "edit-sprint") {
+      const sprint = board.sprints.find((item) => item.id === sprintId);
+      if (action === "edit-sprint" && !sprint) return;
+      sprintEditor = { id: sprint?.id || "", name: sprint?.name || "" };
+      renderBoardContent();
+      modal.querySelector("[data-sprint-form] input")?.focus();
+    }
+    if (action === "cancel-sprint") {
+      sprintEditor = null;
+      renderBoardContent();
+    }
+    if (action === "delete-sprint") {
+      const sprint = board.sprints.find((item) => item.id === sprintId);
+      if (!sprint || !window.confirm(`Удалить спринт «${sprint.name}»? Задачи останутся в «Готовых» без спринта.`)) return;
+      board.sprints = board.sprints.filter((item) => item.id !== sprintId);
+      board.tasks.forEach((task) => { if (task.sprintId === sprintId) task.sprintId = ""; });
+      if (sprintEditor?.id === sprintId) sprintEditor = null;
+      collapsedSprints.delete(sprintId);
+      saveCollapsedSprints();
+      persistNow();
+    }
+    if (action === "show-task-sprint-form" && taskDraft) {
+      const form = modal.querySelector("[data-task-sprint-form]");
+      if (form) {
+        form.hidden = false;
+        actionTarget.hidden = true;
+        form.querySelector("input")?.focus();
+      }
+    }
+    if (action === "hide-task-sprint-form") {
+      const form = actionTarget.closest("[data-task-sprint-form]");
+      if (form) form.hidden = true;
+      modal.querySelector('[data-action="show-task-sprint-form"]')?.removeAttribute("hidden");
     }
     if (action === "filter-status") {
       selectedStatusId = selectedStatusId === statusId ? "" : statusId;
@@ -1156,14 +1284,14 @@ function attachBoardEvents(modal) {
     }
     if (action === "set-status-icon") {
       const status = getStatus(statusId);
-      if (status) {
+      if (status && statusId !== DONE_STATUS_ID) {
         status.icon = icon;
         persistNow();
       }
     }
     if (action === "delete-status") {
       const status = getStatus(statusId);
-      if (!status || board.statuses.length === 1) return;
+      if (!status || statusId === DONE_STATUS_ID || board.statuses.length === 1) return;
       const confirmed = await confirmStatusDelete(status);
       if (!confirmed || board.statuses.length === 1 || !board.statuses.some((item) => item.id === statusId)) return;
       board.statuses = board.statuses.filter((item) => item.id !== statusId);
@@ -1206,7 +1334,42 @@ function attachBoardEvents(modal) {
     if (action === "delete-task" && taskDraft) removeTask(taskDraft.id);
   });
 
+  modal.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!form.matches("[data-sprint-form], [data-task-sprint-form]")) return;
+    event.preventDefault();
+    const input = form.querySelector("[data-sprint-name]");
+    const editingId = form.matches("[data-sprint-form]") ? sprintEditor?.id || "" : "";
+    const name = validatedSprintName(input, editingId);
+    if (!name) return;
+
+    if (form.matches("[data-task-sprint-form]")) {
+      if (!taskDraft || taskDraft.statusId !== DONE_STATUS_ID) return;
+      const sprint = makeSprint(name);
+      board.sprints.push(sprint);
+      taskDraft.sprintId = sprint.id;
+      persistNow({ render: false });
+      renderTaskDetail();
+      return;
+    }
+
+    if (editingId) {
+      const sprint = board.sprints.find((item) => item.id === editingId);
+      if (!sprint) return;
+      sprint.name = name;
+    } else {
+      board.sprints.push(makeSprint(name));
+    }
+    sprintEditor = null;
+    persistNow();
+  });
+
   modal.addEventListener("input", (event) => {
+    if (event.target.matches("[data-sprint-name]")) {
+      event.target.setCustomValidity("");
+      if (event.target.closest("[data-sprint-form]") && sprintEditor) sprintEditor.name = event.target.value;
+      return;
+    }
     if (event.target.id === "task-board-search") {
       searchQuery = event.target.value.trim().toLocaleLowerCase("ru");
       renderBoardContent();
@@ -1256,7 +1419,7 @@ function attachBoardEvents(modal) {
       return;
     }
     const statusField = event.target.dataset.statusField;
-    if (statusField && statusField !== "color") {
+    if (statusField && statusField !== "color" && !(statusField === "name" && event.target.dataset.statusId === DONE_STATUS_ID)) {
       const status = getStatus(event.target.dataset.statusId);
       if (status) {
         status[statusField] = event.target.value;
@@ -1331,16 +1494,23 @@ function attachBoardEvents(modal) {
       return;
     }
     const taskField = event.target.dataset.taskField;
-    if (["statusId", "parentId", "dueDate"].includes(taskField) && taskDraft) {
+    if (["statusId", "parentId", "dueDate", "sprintId"].includes(taskField) && taskDraft) {
       taskDraft[taskField] = event.target.value;
       if (taskField === "parentId" && taskDraft.parentId) {
         const parent = getTask(taskDraft.parentId);
-        if (parent) taskDraft.statusId = parent.statusId;
+        if (parent) {
+          taskDraft.statusId = parent.statusId;
+          taskDraft.sprintId = parent.statusId === DONE_STATUS_ID ? parent.sprintId : "";
+        }
       }
+      if (taskField === "statusId" && taskDraft.statusId !== DONE_STATUS_ID) taskDraft.sprintId = "";
       const task = getTask(taskDraft.id);
       if (task) Object.assign(task, taskDraft, { links: taskDraft.links.map((link) => ({ ...link })) });
       persistNow({ render: false });
       renderTaskDetail();
+      if (taskField === "sprintId" || (taskField === "statusId" && taskDraft.statusId === DONE_STATUS_ID)) {
+        modal.querySelector('#task-status-detail [data-task-field="sprintId"]')?.focus();
+      }
       return;
     }
     if (event.target.dataset.statusField === "color") {
@@ -1380,7 +1550,7 @@ function attachBoardEvents(modal) {
       editor.classList.add(placeAfter ? "task-status-edit--drop-after" : "task-status-edit--drop-before");
       return;
     }
-    const target = event.target.closest("[data-task-id], [data-drop-status]");
+    const target = event.target.closest("[data-task-id], [data-drop-sprint], [data-drop-status]");
     if (!target || !draggedTaskId) return;
     event.preventDefault();
     modal.querySelectorAll(".task-board__drop-target").forEach((item) => item.classList.remove("task-board__drop-target"));
@@ -1396,7 +1566,7 @@ function attachBoardEvents(modal) {
       draggedStatusId = "";
       return;
     }
-    const target = event.target.closest("[data-task-id], [data-drop-status]");
+    const target = event.target.closest("[data-task-id], [data-drop-sprint], [data-drop-status]");
     if (!target || !draggedTaskId) return;
     event.preventDefault();
     const targetTask = target.dataset.taskId ? getTask(target.dataset.taskId) : null;
@@ -1407,7 +1577,8 @@ function attachBoardEvents(modal) {
       if (nextTaskRow?.dataset.taskId === draggedTaskId) nextTaskRow = nextTaskRow.nextElementSibling;
       beforeTaskId = nextTaskRow?.dataset.taskId || "";
     }
-    if (targetTask?.id !== draggedTaskId) moveTask(draggedTaskId, statusId, beforeTaskId);
+    const targetSprintId = targetTask?.sprintId ?? target.dataset.dropSprint ?? "";
+    if (targetTask?.id !== draggedTaskId) moveTask(draggedTaskId, statusId, beforeTaskId, targetSprintId);
     draggedTaskId = "";
   });
   modal.addEventListener("dragend", () => {
@@ -1421,6 +1592,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (document.getElementById("task-status-delete-confirm")) return;
   if (taskDraft) closeTaskDetail();
+  else if (sprintEditor) {
+    sprintEditor = null;
+    renderBoardContent();
+  }
   else if (document.getElementById("task-status-modal")) closeBoard();
 });
 
@@ -1435,6 +1610,7 @@ window.addEventListener("space-tab:task-statuses-restored", () => {
   pendingTaskFields.clear();
   pendingLinkFields.clear();
   pendingResponsibleFields.clear();
+  sprintEditor = null;
   taskDraft = null;
   document.querySelector("#task-status-detail")?.remove();
   board = loadTaskBoard();
@@ -1445,6 +1621,12 @@ window.addEventListener("space-tab:task-statuses-restored", () => {
 });
 
 window.addEventListener("storage", (event) => {
+  if (event.key === COLLAPSED_SPRINTS_KEY) {
+    collapsedSprints.clear();
+    loadCollapsedSprints().forEach((id) => collapsedSprints.add(id));
+    if (document.getElementById("task-status-modal")) renderBoardContent();
+    return;
+  }
   if (event.key !== TASK_STATUS_STORAGE_KEY) return;
   const incoming = loadTaskBoard();
 

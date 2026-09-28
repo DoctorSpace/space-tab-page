@@ -21,6 +21,7 @@ import {
 import { loadCalendarEvents, loadCalendarList } from "./google-calendar-data.js";
 import { initCurrencyConverter } from "./currency-converter.js";
 import { applyFinanceStateFromSync, getFinanceStateForSync, initFinance, openFinanceModal } from "./finance.js";
+import { initSittingReminders, openSittingReminders } from "./sitting-reminders.js";
 import {
   applyBodyMetricsStateFromSync,
   getBodyMetricsStateForSync,
@@ -58,10 +59,13 @@ const CALENDAR_SELECTION_KEY = "google_calendar_selection";
 const CALENDAR_EVENTS_CACHE_KEY = "google_calendar_events_cache";
 const CALENDAR_EVENTS_LIMIT = 18;
 const CALENDAR_PREVIEW_PER_SOURCE = 8;
+const CALENDAR_EVENTS_PAGE_SIZE = 250;
+let calendarDayStamp = getTodayStamp();
 let calendarState = {
   calendars: [],
   selectedIds: [],
   events: [],
+  eventsDayStamp: null,
   loadingCalendars: false,
   loadingEvents: false,
   initialized: false,
@@ -100,6 +104,7 @@ function buildCalendarSelectionSignature(ids) {
 function saveCalendarEventsCache(events, selectedIds, selectedCalendars = []) {
   const payload = {
     dayStamp: getTodayStamp(),
+    cacheVersion: 2,
     selectionSignature: buildCalendarSelectionSignature(selectedIds),
     selectedCalendars: selectedCalendars.map((calendar) => ({
       id: calendar.id,
@@ -117,16 +122,19 @@ function loadCalendarEventsCachePayload(selectedIds) {
   try {
     const raw = localStorage.getItem(CALENDAR_EVENTS_CACHE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    if (!parsed || parsed.dayStamp !== getTodayStamp()) return null;
+    if (!parsed) return null;
     if (parsed.selectionSignature !== buildCalendarSelectionSignature(selectedIds)) return null;
     if (!Array.isArray(parsed.events)) return null;
 
     return {
+      dayStamp: parsed.dayStamp,
+      cacheVersion: parsed.cacheVersion,
       selectedCalendars: Array.isArray(parsed.selectedCalendars) ? parsed.selectedCalendars : [],
       events: parsed.events
         .map((event) => ({
           ...event,
-          startDate: new Date(event.startDate)
+          startDate: new Date(event.startDate),
+          relativeLabel: formatRelativeEventLabel(event)
         }))
         .filter((event) => !Number.isNaN(event.startDate.getTime()))
     };
@@ -135,8 +143,8 @@ function loadCalendarEventsCachePayload(selectedIds) {
   }
 }
 
-function loadCalendarEventsCache(selectedIds) {
-  return loadCalendarEventsCachePayload(selectedIds)?.events || null;
+function isCalendarEventsCacheFresh(payload) {
+  return payload?.dayStamp === getTodayStamp() && payload.cacheVersion === 2;
 }
 
 function resolveSelectedCalendarsMeta() {
@@ -183,11 +191,15 @@ function splitCalendarsByOwnership(calendars) {
   return { mine, other };
 }
 
+function parseCalendarDate(value) {
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value);
+}
+
 function formatEventDateLabel(event) {
   const startValue = event.start?.dateTime || event.start?.date;
   if (!startValue) return "Без даты";
 
-  const date = new Date(startValue);
+  const date = parseCalendarDate(startValue);
   if (Number.isNaN(date.getTime())) return "Без даты";
 
   const day = new Intl.DateTimeFormat("ru-RU", { day: "2-digit" }).format(date);
@@ -201,7 +213,7 @@ function formatEventTimeLabel(event) {
   const startValue = event.start?.dateTime || event.start?.date;
   if (!startValue) return "Без времени";
 
-  const date = new Date(startValue);
+  const date = parseCalendarDate(startValue);
   if (Number.isNaN(date.getTime())) return "Без времени";
 
   return new Intl.DateTimeFormat("ru-RU", {
@@ -215,7 +227,7 @@ function formatRelativeEventLabel(event) {
   const startValue = event.start?.dateTime || event.start?.date;
   if (!startValue) return "Без срока";
 
-  const eventDate = new Date(startValue);
+  const eventDate = parseCalendarDate(startValue);
   if (Number.isNaN(eventDate.getTime())) return "Без срока";
 
   const now = new Date();
@@ -238,7 +250,7 @@ function formatRelativeEventLabel(event) {
   if (diffDays === 1) return "Завтра";
   if (diffDays > 1 && diffDays < 5) return `Через ${diffDays} дня`;
   if (diffDays >= 5) return `Через ${diffDays} дней`;
-  return "Сегодня";
+  return diffDays === -1 ? "Вчера" : "Прошло";
 }
 
 function colorToRgbComponents(color) {
@@ -254,13 +266,14 @@ function colorToRgbComponents(color) {
 
 function normalizeCalendarEvent(event, calendar) {
   const startValue = event.start?.dateTime || event.start?.date || "";
-  const startDate = new Date(startValue);
+  const startDate = parseCalendarDate(startValue);
   const calendarColor = calendar.backgroundColor || "#6aa9ff";
 
   return {
     id: `${calendar.id}:${event.id}`,
     title: event.summary || "Без названия",
     start: event.start || {},
+    end: event.end || {},
     startDate,
     dateLabel: formatEventDateLabel(event),
     timeLabel: formatEventTimeLabel(event),
@@ -302,6 +315,28 @@ function updateCalendarButtonState() {
   if (!calendarToggle) return;
 
   calendarToggle.hidden = !driveConnected;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + 1);
+  const todayCount = driveConnected && calendarState.eventsDayStamp === getTodayStamp() && calendarState.selectedIds.length
+    ? calendarState.events.filter((event) => {
+        if (!calendarState.selectedIds.includes(event.calendarId)) return false;
+        const start = event.startDate instanceof Date ? event.startDate : new Date(event.startDate);
+        const endValue = event.end?.dateTime || event.end?.date;
+        const end = endValue ? parseCalendarDate(endValue) : null;
+        return start < tomorrowStart && (end && !Number.isNaN(end.getTime()) ? end > todayStart : start >= todayStart);
+      }).length
+    : 0;
+  calendarToggle.setAttribute("aria-label", todayCount ? `Google Календарь. Событий сегодня: ${todayCount}` : "Google Календарь");
+  calendarToggle.querySelector(".task-status-btn__badge")?.remove();
+  if (todayCount) {
+    const badge = document.createElement("span");
+    badge.className = "task-status-btn__badge task-status-btn__badge--attention";
+    badge.title = `Событий сегодня: ${todayCount}`;
+    badge.setAttribute("aria-hidden", "true");
+    badge.textContent = todayCount;
+    calendarToggle.appendChild(badge);
+  }
 
   if (!driveConnected) {
     calendarToggle.classList.remove("header__calendar-toggle--open");
@@ -311,6 +346,7 @@ function updateCalendarButtonState() {
 }
 
 function renderCalendarMenu() {
+  updateCalendarButtonState();
   const body = getCalendarMenuBody();
   if (!body) return;
 
@@ -359,7 +395,7 @@ function renderCalendarMenu() {
       return '<div class="calendar-menu__empty">Выбери один или несколько календарей, и здесь появится список ближайших событий.</div>';
     }
 
-    if (loadingEvents) {
+    if (loadingEvents && !events.length) {
       return `
         <div class="calendar-menu__events calendar-menu__events--loading">
           ${Array.from({ length: 3 }, () => '<div class="calendar-menu__event-skeleton"></div>').join("")}
@@ -376,7 +412,7 @@ function renderCalendarMenu() {
 
     return `
       <div class="calendar-menu__events">
-        ${events
+        ${events.slice(0, CALENDAR_EVENTS_LIMIT)
           .map(
             (event) => `
               <article class="calendar-menu__event-card" style="--calendar-color: ${escapeHtml(event.calendarColor)}; --calendar-rgb: ${escapeHtml(event.calendarColorRgb)};" data-relative-label="${escapeHtml(event.relativeLabel)}">
@@ -423,8 +459,8 @@ function renderCalendarMenu() {
           <button class="calendar-menu__icon-btn${settingsOpen ? " calendar-menu__icon-btn--active" : ""}" id="calendar-settings-btn" type="button" aria-label="Настройки календарей" title="Выбрать календари">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.22-1.13.53-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.52a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.41 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.22 1.13-.53 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
           </button>
-          <button class="calendar-menu__action" id="calendar-refresh-btn" type="button">
-            ${loadingCalendars || loadingEvents ? "Загрузка..." : "Обновить"}
+          <button class="calendar-menu__action${loadingCalendars || loadingEvents ? " calendar-menu__action--loading" : ""}" id="calendar-refresh-btn" type="button" ${loadingCalendars || loadingEvents ? 'disabled aria-busy="true"' : ""}>
+            ${loadingCalendars || loadingEvents ? '<span class="calendar-menu__action-spinner" aria-hidden="true"></span>Загрузка...' : "Обновить"}
           </button>
         </div>
       </div>
@@ -432,7 +468,8 @@ function renderCalendarMenu() {
     ${error ? `<div class="calendar-menu__error">${escapeHtml(error)}</div>` : ""}
     ${settingsOpen ? `<section class="calendar-menu__picker${loadingCalendars ? " calendar-menu__picker--loading" : ""}">${renderPicker()}</section>` : ""}
     <section class="calendar-menu__events-block">
-      <div class="calendar-menu__section-title">Ближайшие события</div>
+      <div class="calendar-menu__section-title">${events.length && calendarState.eventsDayStamp !== getTodayStamp() ? "Сохранённые события" : "Ближайшие события"}</div>
+      ${(loadingCalendars || loadingEvents) && events.length ? '<div class="calendar-menu__hint">Показываем сохранённые события, загружаем актуальные...</div>' : ""}
       ${renderEvents()}
     </section>
   `;
@@ -476,15 +513,20 @@ async function refreshCalendarList({ interactive = false } = {}) {
     calendarState.initialized = true;
     calendarState.selectedIds = calendarState.selectedIds.filter((id) => calendars.some((calendar) => calendar.id === id));
     persistCalendarSelection(calendarState.selectedIds);
-    if (!calendarState.selectedIds.length) calendarState.events = [];
+    if (!calendarState.selectedIds.length) {
+      calendarState.events = [];
+      calendarState.eventsDayStamp = null;
+    }
     renderCalendarMenu();
 
     if (calendarState.selectedIds.length) {
-      const cachedEvents = loadCalendarEventsCache(calendarState.selectedIds);
-      if (cachedEvents) {
-        calendarState.events = cachedEvents;
+      const cachedPayload = loadCalendarEventsCachePayload(calendarState.selectedIds);
+      if (cachedPayload) {
+        calendarState.events = cachedPayload.events;
+        calendarState.eventsDayStamp = isCalendarEventsCacheFresh(cachedPayload) ? cachedPayload.dayStamp : null;
         renderCalendarMenu();
-      } else {
+      }
+      if (!isCalendarEventsCacheFresh(cachedPayload)) {
         await refreshCalendarEvents({ interactive: false });
       }
     }
@@ -503,6 +545,7 @@ async function refreshCalendarEvents({ interactive = false } = {}) {
   if (calendarState.loadingEvents) return;
   if (!calendarState.selectedIds.length) {
     calendarState.events = [];
+    calendarState.eventsDayStamp = null;
     clearCalendarEventsCache();
     renderCalendarMenu();
     return;
@@ -511,6 +554,7 @@ async function refreshCalendarEvents({ interactive = false } = {}) {
   const selectedCalendars = resolveSelectedCalendarsMeta();
   if (!selectedCalendars.length) {
     calendarState.events = [];
+    calendarState.eventsDayStamp = null;
     clearCalendarEventsCache();
     renderCalendarMenu();
     return;
@@ -519,27 +563,45 @@ async function refreshCalendarEvents({ interactive = false } = {}) {
   calendarState.loadingEvents = true;
   calendarState.error = "";
   renderCalendarMenu();
+  const requestDayStamp = getTodayStamp();
+  const selectionSignature = buildCalendarSelectionSignature(calendarState.selectedIds);
+  const isStale = () => requestDayStamp !== getTodayStamp()
+    || selectionSignature !== buildCalendarSelectionSignature(calendarState.selectedIds);
 
   try {
+    const today = new Date();
+    const timeMin = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
+    const tomorrowMin = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
     const events = await getGoogleTokenWithRetry(interactive, async (token) => {
       const batches = await Promise.all(
         selectedCalendars.map(async (calendar) => {
-          const items = await loadCalendarEvents(token, calendar.id, { maxResults: CALENDAR_PREVIEW_PER_SOURCE });
-          return items.map((event) => normalizeCalendarEvent(event, calendar));
+          const [todayEvents, upcomingEvents] = await Promise.all([
+            loadCalendarEvents(token, calendar.id, {
+              timeMin,
+              timeMax: tomorrowMin,
+              maxResults: CALENDAR_EVENTS_PAGE_SIZE,
+              allPages: true
+            }),
+            loadCalendarEvents(token, calendar.id, { timeMin: tomorrowMin, maxResults: CALENDAR_PREVIEW_PER_SOURCE })
+          ]);
+          return [...todayEvents, ...upcomingEvents].map((event) => normalizeCalendarEvent(event, calendar));
         })
       );
 
-      return batches
-        .flat()
-        .filter((event) => !Number.isNaN(event.startDate.getTime()))
-        .sort((a, b) => a.startDate - b.startDate)
-        .slice(0, CALENDAR_EVENTS_LIMIT);
+      const uniqueEvents = new Map();
+      batches.flat().forEach((event) => {
+        if (!Number.isNaN(event.startDate.getTime())) uniqueEvents.set(event.id, event);
+      });
+      return [...uniqueEvents.values()].sort((a, b) => a.startDate - b.startDate);
     });
 
-    driveConnected = true;
-    setDriveButtonState({ connected: true });
-    calendarState.events = events;
-    saveCalendarEventsCache(events, calendarState.selectedIds, selectedCalendars);
+    if (!isStale()) {
+      driveConnected = true;
+      setDriveButtonState({ connected: true });
+      calendarState.events = events;
+      calendarState.eventsDayStamp = getTodayStamp();
+      saveCalendarEventsCache(events, calendarState.selectedIds, selectedCalendars);
+    }
   } catch (error) {
     console.error("Calendar events load failed", error);
     calendarState.error = "Не удалось загрузить события";
@@ -547,7 +609,41 @@ async function refreshCalendarEvents({ interactive = false } = {}) {
   } finally {
     calendarState.loadingEvents = false;
     renderCalendarMenu();
+    if (isStale()) restoreCalendarEvents({ refreshStale: true });
   }
+}
+
+function restoreCalendarEvents({ refreshStale = false } = {}) {
+  if (!calendarState.selectedIds.length) return;
+  const cachedPayload = loadCalendarEventsCachePayload(calendarState.selectedIds);
+  if (cachedPayload) {
+    calendarState.events = cachedPayload.events;
+    calendarState.eventsDayStamp = isCalendarEventsCacheFresh(cachedPayload) ? cachedPayload.dayStamp : null;
+    renderCalendarMenu();
+    if (!refreshStale || isCalendarEventsCacheFresh(cachedPayload)) return;
+  }
+  if (calendarState.loadingEvents || calendarState.loadingCalendars) return;
+  if (resolveSelectedCalendarsMeta().length) {
+    refreshCalendarEvents({ interactive: false });
+  } else {
+    refreshCalendarList({ interactive: false });
+  }
+}
+
+function checkCalendarDay() {
+  const today = getTodayStamp();
+  if (today === calendarDayStamp) return;
+  calendarDayStamp = today;
+  renderCalendarMenu();
+}
+
+function scheduleCalendarDayCheck() {
+  const now = new Date();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  setTimeout(() => {
+    checkCalendarDay();
+    scheduleCalendarDayCheck();
+  }, tomorrow.getTime() - now.getTime() + 100);
 }
 
 function getItemSpan(item) {
@@ -1012,6 +1108,7 @@ async function loginGoogle({ interactive = true }) {
     await getGoogleAuthToken(interactive);
     driveConnected = true;
     setDriveButtonState({ connected: true });
+    restoreCalendarEvents();
     setRequestStatus("success", "Вход в Google выполнен");
     showSyncToast("Вход в Google выполнен", "success");
     return true;
@@ -1265,6 +1362,7 @@ async function disconnectGoogleDrive() {
   driveConnected = false;
   calendarState.calendars = [];
   calendarState.events = [];
+  calendarState.eventsDayStamp = null;
   calendarState.initialized = false;
   calendarState.error = "";
   clearCalendarEventsCache();
@@ -1284,6 +1382,7 @@ function initDriveButtonState() {
     .then(() => {
       driveConnected = true;
       setDriveButtonState({ connected: true });
+      restoreCalendarEvents();
     })
     .catch(() => {
       driveConnected = false;
@@ -1387,6 +1486,11 @@ function createHeader() {
         </div>
       </div>
       <button class="header__finance-btn" id="finance-open-btn" type="button" title="Открыть финансы" aria-label="Открыть финансы">Финансы</button>
+      <button class="header__sitting-btn" id="sitting-reminders-open-btn" type="button" title="Напоминания о перерыве" aria-label="Настроить напоминания о перерыве">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 16.5h12l-1.5-2.4V10a4.5 4.5 0 0 0-9 0v4.1L6 16.5ZM10 20h4"/>
+        </svg>
+      </button>
       <button class="header__calendar-toggle" id="calendar-menu-toggle" type="button" title="Google Календарь" aria-label="Google Календарь" hidden>Календарь</button>
       <button class="header__currency-toggle" id="currency-menu-toggle" type="button" title="Конвертер валют" aria-label="Конвертер валют">₽/$</button>
       <button class="header__blackout-btn" id="blackout-toggle-btn" type="button" title="Чёрный экран на весь монитор" aria-label="Чёрный экран"></button>
@@ -1457,6 +1561,8 @@ function createHeader() {
     openFinanceModal();
   });
 
+  header.querySelector("#sitting-reminders-open-btn")?.addEventListener("click", openSittingReminders);
+
   const menu = header.querySelector("#drive-menu");
   const menuToggle = header.querySelector("#drive-menu-toggle");
   const menuOverlay = header.querySelector("#drive-menu-overlay");
@@ -1498,7 +1604,7 @@ function createHeader() {
 
   renderCalendarMenu();
 
-  calendarToggle?.addEventListener("click", async () => {
+  calendarToggle?.addEventListener("click", () => {
     if (!driveConnected) return;
 
     const nextOpen = !calendarMenu?.classList.contains("calendar-menu--open");
@@ -1506,14 +1612,9 @@ function createHeader() {
     currencyConverter.closeMenu();
     setCalendarMenuOpen(nextOpen);
 
-    if (nextOpen && calendarState.selectedIds.length) {
-      const cachedEvents = loadCalendarEventsCache(calendarState.selectedIds);
-      if (cachedEvents) {
-        calendarState.events = cachedEvents;
-        renderCalendarMenu();
-      } else if (resolveSelectedCalendarsMeta().length) {
-        await refreshCalendarEvents({ interactive: false });
-      }
+    if (nextOpen) {
+      checkCalendarDay();
+      restoreCalendarEvents({ refreshStale: true });
     }
   });
 
@@ -1542,8 +1643,9 @@ function createHeader() {
   calendarMenu?.addEventListener("click", (event) => {
     const refreshBtn = event.target.closest("#calendar-refresh-btn");
     if (refreshBtn) {
-      if (calendarState.selectedIds.length && resolveSelectedCalendarsMeta().length) {
-        refreshCalendarEvents({ interactive: false });
+      if (calendarState.selectedIds.length && !calendarState.loadingEvents && !calendarState.loadingCalendars) {
+        if (resolveSelectedCalendarsMeta().length) refreshCalendarEvents({ interactive: false });
+        else refreshCalendarList({ interactive: false });
       }
       return;
     }
@@ -1575,11 +1677,14 @@ function createHeader() {
 
     calendarState.selectedIds = Array.from(selected);
     persistCalendarSelection(calendarState.selectedIds);
-    const cachedEvents = loadCalendarEventsCache(calendarState.selectedIds);
-    if (cachedEvents) {
-      calendarState.events = cachedEvents;
+    calendarState.events = [];
+    calendarState.eventsDayStamp = null;
+    const cachedPayload = loadCalendarEventsCachePayload(calendarState.selectedIds);
+    if (cachedPayload) {
+      calendarState.events = cachedPayload.events;
+      calendarState.eventsDayStamp = isCalendarEventsCacheFresh(cachedPayload) ? cachedPayload.dayStamp : null;
       renderCalendarMenu();
-      return;
+      if (isCalendarEventsCacheFresh(cachedPayload)) return;
     }
 
     renderCalendarMenu();
@@ -2377,12 +2482,17 @@ function init() {
   window.dispatchEvent(new CustomEvent("space-tab:link-mode-changed", { detail: { mode: currentMode } }));
 
   initDriveButtonState();
+  scheduleCalendarDayCheck();
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) checkCalendarDay();
+  });
 
   attachAppEvents();
   renderCategories();
   initHabits();
   initBodyMetrics();
   initFinance();
+  initSittingReminders();
 
   window.addEventListener("space-tab:habits-updated", () => {
     scheduleDriveSync();

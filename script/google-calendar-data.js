@@ -46,9 +46,11 @@ export async function loadCalendarList(token) {
 export async function loadCalendarEvents(token, calendarId, options = {}) {
   const {
     timeMin = new Date().toISOString(),
+    timeMax,
     maxResults = 12,
     singleEvents = true,
-    orderBy = "startTime"
+    orderBy = "startTime",
+    allPages = false
   } = options;
 
   const params = new URLSearchParams({
@@ -57,11 +59,19 @@ export async function loadCalendarEvents(token, calendarId, options = {}) {
     singleEvents: String(singleEvents),
     orderBy
   });
+  if (timeMax) params.set("timeMax", timeMax);
 
-  const response = await requestCalendar(
-    token,
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`
-  );
-  const data = await response.json();
-  return data.items || [];
+  const events = [];
+  let pageToken;
+  do {
+    if (pageToken) params.set("pageToken", pageToken);
+    const response = await requestCalendar(
+      token,
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`
+    );
+    const data = await response.json();
+    events.push(...(data.items || []));
+    pageToken = allPages ? data.nextPageToken : null;
+  } while (pageToken);
+  return events;
 }

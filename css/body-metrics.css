@@ -511,9 +511,9 @@
 }
 
 .body-metrics-chart__svg {
-  width: 100%;
+  display: block;
+  width: min(100%, 460px);
   height: auto;
-  min-height: 180px;
   overflow: visible;
 }
 
@@ -539,20 +539,63 @@
   stroke-linejoin: round;
   stroke-width: 3;
   vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
-.body-metrics-chart__dots circle {
+.body-metrics-chart__dot {
   fill: #142438;
   stroke: var(--chart-color);
-  stroke-width: 3;
-  cursor: help;
-  outline: none;
-  transition: r 0.15s;
+  stroke-width: 2.5;
+  pointer-events: none;
 }
 
-.body-metrics-chart__dots circle:hover,
-.body-metrics-chart__dots circle:focus {
-  r: 7;
+.body-metrics-chart__hit {
+  fill: transparent;
+  cursor: help;
+  outline: none;
+}
+
+.body-metrics-chart__point:hover .body-metrics-chart__dot,
+.body-metrics-chart__point:focus-within .body-metrics-chart__dot {
+  fill: var(--chart-color);
+}
+
+.body-metrics-chart__hit:focus-visible {
+  stroke: #fff;
+  stroke-width: 1;
+}
+
+.body-metrics-chart__tooltip {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.body-metrics-chart__point:hover .body-metrics-chart__tooltip,
+.body-metrics-chart__point:focus-within .body-metrics-chart__tooltip {
+  visibility: visible;
+}
+
+.body-metrics-chart__tooltip rect {
+  fill: #0b1727;
+  stroke: rgba(210, 230, 247, 0.36);
+}
+
+.body-metrics-chart__tooltip text {
+  fill: #d3e4f3;
+  font-size: 11px;
+}
+
+.body-metrics-chart__tooltip .body-metrics-chart__tooltip-value {
+  fill: var(--chart-color);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.body-metrics-chart__latest {
+  fill: var(--chart-color);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
 }
 
 .body-metrics-chart__empty {
@@ -781,10 +824,6 @@
 
   .body-metrics-chart-card {
     padding: 10px;
-  }
-
-  .body-metrics-chart__svg {
-    min-height: 150px;
   }
 
   .body-metrics-entry-form {

@@ -1,10 +1,14 @@
 export const TASK_STATUS_STORAGE_KEY = "space_tab_task_statuses_v1";
+export const DONE_STATUS_ID = "done";
+
+const DONE_STATUS = { id: DONE_STATUS_ID, name: "Готовые", color: "#32d391", icon: "check", description: "Завершённые задачи по спринтам" };
 
 const DEFAULT_STATUSES = [
   { id: "in-progress", name: "В работе", color: "#3ba7ff", icon: "play", description: "Задачи, которые уже взяты в работу" },
   { id: "hold", name: "Hold", color: "#ffbd4a", icon: "clock", description: "Задачи, ожидающие решения или материалов" },
   { id: "testing", name: "Тестирование", color: "#9878ff", icon: "flask", description: "Задачи на проверке и тестировании" },
-  { id: "review", name: "На ревью", color: "#32d391", icon: "eye", description: "Задачи, ожидающие ревью" }
+  { id: "review", name: "На ревью", color: "#32d391", icon: "eye", description: "Задачи, ожидающие ревью" },
+  DONE_STATUS
 ];
 
 const STATUS_ICONS = new Set([
@@ -108,8 +112,9 @@ function isGeneratedTrackerUrl(url) {
 
 export function createDefaultTaskBoard() {
   return {
-    version: 8,
+    version: 9,
     statuses: DEFAULT_STATUSES.map((status) => ({ ...status })),
+    sprints: [],
     tasks: [],
     reminder: {
       enabled: true,
@@ -141,13 +146,44 @@ export function sanitizeTaskBoard(value) {
 
   if (!statuses.length) statuses.push(...fallback.statuses);
 
+  const existingDone = statuses.find((status) => status.id === DONE_STATUS_ID);
+  const legacyDoneStatuses = statuses.filter((status) => status.id !== DONE_STATUS_ID && /^(готовые|готово)$/i.test(status.name.trim()));
+  const legacyDoneIds = new Set(legacyDoneStatuses.map((status) => status.id));
+  const doneStatus = existingDone || legacyDoneStatuses[0];
+  if (doneStatus) {
+    for (let index = statuses.length - 1; index >= 0; index -= 1) {
+      if (statuses[index] !== doneStatus && legacyDoneIds.has(statuses[index].id)) statuses.splice(index, 1);
+    }
+    doneStatus.id = DONE_STATUS_ID;
+    doneStatus.name = DONE_STATUS.name;
+    doneStatus.icon = DONE_STATUS.icon;
+  } else {
+    statuses.push({ ...DONE_STATUS });
+  }
+
+  const seenSprintIds = new Set();
+  const sprints = (Array.isArray(value.sprints) ? value.sprints : [])
+    .map((sprint) => {
+      const id = String(sprint?.id || createId("sprint"));
+      const name = String(sprint?.name || "").trim().slice(0, 80);
+      if (!name || seenSprintIds.has(id)) return null;
+      seenSprintIds.add(id);
+      return { id, name };
+    })
+    .filter(Boolean);
+
   const statusIds = new Set(statuses.map((status) => status.id));
+  const sprintIds = new Set(sprints.map((sprint) => sprint.id));
   const seenTaskIds = new Set();
   const tasks = (Array.isArray(value.tasks) ? value.tasks : [])
     .map((task) => {
       const id = String(task?.id || createId("task"));
       if (seenTaskIds.has(id)) return null;
       seenTaskIds.add(id);
+      const rawStatusId = String(task?.statusId || "");
+      const statusId = legacyDoneIds.has(rawStatusId)
+        ? DONE_STATUS_ID
+        : statusIds.has(rawStatusId) ? rawStatusId : statuses[0].id;
       return {
         id,
         code: String(task?.code || "").slice(0, 50),
@@ -159,7 +195,8 @@ export function sanitizeTaskBoard(value) {
         attention: task?.attention === true,
         markerIcon: TASK_MARKER_ICONS.has(task?.markerIcon) ? task.markerIcon : "document",
         markerColor: safeColor(task?.markerColor, "#75bdf0"),
-        statusId: statusIds.has(String(task?.statusId)) ? String(task.statusId) : statuses[0].id,
+        statusId,
+        sprintId: statusId === DONE_STATUS_ID && sprintIds.has(String(task?.sprintId)) ? String(task.sprintId) : "",
         parentId: task?.parentId ? String(task.parentId) : "",
         links: sanitizeLinks(task?.links),
         responsibles: sanitizeResponsibles(task?.responsibles),
@@ -215,8 +252,9 @@ export function sanitizeTaskBoard(value) {
   });
 
   return {
-    version: 8,
+    version: 9,
     statuses,
+    sprints,
     tasks,
     reminder: {
       enabled: value.reminder?.enabled !== false,
@@ -268,6 +306,7 @@ export function makeTask(statusId) {
     markerIcon: "document",
     markerColor: "#75bdf0",
     statusId,
+    sprintId: "",
     parentId: "",
     links: [
       { id: createId("link"), label: "Макет", url: "" },
@@ -290,6 +329,10 @@ export function makeStatus() {
     icon: "clock",
     description: ""
   };
+}
+
+export function makeSprint(name) {
+  return { id: createId("sprint"), name: String(name).trim().slice(0, 80) };
 }
 
 export function makeTaskLink() {

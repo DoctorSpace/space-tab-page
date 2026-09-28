@@ -104,6 +104,7 @@ body {
 }
 
 .header__calendar-toggle {
+  position: relative;
   height: 36px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -477,6 +478,23 @@ body {
 
 .calendar-menu__action:hover {
   background: linear-gradient(135deg, rgba(74, 133, 247, 0.22), rgba(74, 196, 163, 0.28));
+}
+
+.calendar-menu__action--loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: wait;
+}
+
+.calendar-menu__action-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(240, 248, 255, 0.28);
+  border-top-color: #80d6c4;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .calendar-menu__counter {
