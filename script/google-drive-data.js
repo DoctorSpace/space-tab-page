@@ -1,5 +1,7 @@
 const DRIVE_FOLDER_NAME = "Space Tab";
 const DRIVE_FILE_NAME = "space-tab.json";
+const FINANCE_FILE_NAME = "finance.json";
+const BODY_METRICS_FILE_NAME = "body-metrics.json";
 
 function buildMultipartBody(metadata, jsonData) {
   const boundary = `space-tab-${Date.now()}`;
@@ -75,7 +77,11 @@ async function ensureFolder(token) {
 }
 
 async function findBackupFile(token, folderId) {
-  const query = encodeURIComponent(`name='${DRIVE_FILE_NAME}' and '${folderId}' in parents and trashed=false`);
+  return findNamedFile(token, folderId, DRIVE_FILE_NAME);
+}
+
+async function findNamedFile(token, folderId, fileName) {
+  const query = encodeURIComponent(`name='${fileName}' and '${folderId}' in parents and trashed=false`);
   const searchRes = await requestDrive(
     token,
     `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,webViewLink)&pageSize=1`
@@ -84,8 +90,8 @@ async function findBackupFile(token, folderId) {
   return searchJson.files?.[0] || null;
 }
 
-async function updateExistingFile(token, fileId, payload) {
-  const multipart = buildMultipartBody({ mimeType: "application/json", name: DRIVE_FILE_NAME }, payload);
+async function updateExistingFile(token, fileId, payload, fileName = DRIVE_FILE_NAME) {
+  const multipart = buildMultipartBody({ mimeType: "application/json", name: fileName }, payload);
   const updateRes = await requestDrive(
     token,
     `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,name,webViewLink`,
@@ -100,10 +106,10 @@ async function updateExistingFile(token, fileId, payload) {
   return updateRes.json();
 }
 
-async function createBackupFile(token, payload, folderId) {
+async function createBackupFile(token, payload, folderId, fileName = DRIVE_FILE_NAME) {
   const multipart = buildMultipartBody(
     {
-      name: DRIVE_FILE_NAME,
+      name: fileName,
       mimeType: "application/json",
       parents: [folderId]
     },
@@ -125,16 +131,28 @@ async function createBackupFile(token, payload, folderId) {
 }
 
 export async function saveSpaceTabDataToDrive(token, payloadData) {
+  return saveNamedDataToDrive(token, DRIVE_FILE_NAME, payloadData);
+}
+
+export async function saveFinanceDataToDrive(token, payloadData) {
+  return saveNamedDataToDrive(token, FINANCE_FILE_NAME, payloadData);
+}
+
+export async function saveBodyMetricsDataToDrive(token, payloadData) {
+  return saveNamedDataToDrive(token, BODY_METRICS_FILE_NAME, payloadData);
+}
+
+async function saveNamedDataToDrive(token, fileName, payloadData) {
   const payload = {
     updatedAt: new Date().toISOString(),
     data: payloadData
   };
 
   const folderId = await ensureFolder(token);
-  const existingFile = await findBackupFile(token, folderId);
+  const existingFile = await findNamedFile(token, folderId, fileName);
 
   if (existingFile?.id) {
-    const updated = await updateExistingFile(token, existingFile.id, payload);
+    const updated = await updateExistingFile(token, existingFile.id, payload, fileName);
     return {
       id: updated.id,
       name: updated.name,
@@ -143,7 +161,7 @@ export async function saveSpaceTabDataToDrive(token, payloadData) {
     };
   }
 
-  const created = await createBackupFile(token, payload, folderId);
+  const created = await createBackupFile(token, payload, folderId, fileName);
   return {
     id: created.id,
     name: created.name,
@@ -153,8 +171,20 @@ export async function saveSpaceTabDataToDrive(token, payloadData) {
 }
 
 export async function loadSpaceTabDataFromDrive(token) {
+  return loadNamedDataFromDrive(token, DRIVE_FILE_NAME);
+}
+
+export async function loadFinanceDataFromDrive(token) {
+  return loadNamedDataFromDrive(token, FINANCE_FILE_NAME);
+}
+
+export async function loadBodyMetricsDataFromDrive(token) {
+  return loadNamedDataFromDrive(token, BODY_METRICS_FILE_NAME);
+}
+
+async function loadNamedDataFromDrive(token, fileName) {
   const folderId = await ensureFolder(token);
-  const existingFile = await findBackupFile(token, folderId);
+  const existingFile = await findNamedFile(token, folderId, fileName);
   if (!existingFile?.id) {
     return {
       data: null,

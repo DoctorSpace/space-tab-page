@@ -15,7 +15,10 @@
   "host_permissions": ["https://www.googleapis.com/*"],
   "oauth2": {
     "client_id": "51553271549-87cqjn0ionle7l49t0nlhum9kbrab8jf.apps.googleusercontent.com",
-    "scopes": ["https://www.googleapis.com/auth/drive.file"]
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/calendar.readonly"
+    ]
   },
   "action": {
     "default_title": "__MSG_name__"

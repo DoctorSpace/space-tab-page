@@ -34,4 +34,4 @@
 
 ## Пример
 
-<img width="2556" height="1302" alt="Space Tab preview" src="https://github.com/user-attachments/assets/2a863209-e5e9-4c27-8969-c16e3a6649fd" />
+<img width="2556" height="1270" alt="image" src="https://github.com/user-attachments/assets/caa408f7-a2a8-447b-a8c4-f6e1ef13aeaf" />
